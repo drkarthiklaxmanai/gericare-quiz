@@ -1,0 +1,13 @@
+{
+  "name": "gericare-quiz",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.14.0",
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint"
+  }
+}
