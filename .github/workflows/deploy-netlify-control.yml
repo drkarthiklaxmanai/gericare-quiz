@@ -1,0 +1,22 @@
+name: Deploy GERICARE Control Room to Netlify
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/control-room-live]
+    paths:
+      - 'apps/control-room/**'
+      - '.github/workflows/deploy-netlify-control.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/control-room
+    steps:
+      - uses: actions/checkout@v4
+      - name: Normalize GERICARE branding
+        run: sed -i 's/GERiCARE/GERICARE/g' src/main.tsx index.html
+      - name: Deploy to Netlify
+        run: npx -y @netlify/mcp@latest --site-id 28021066-a86c-4042-897a-7466c8a793a4 --proxy-path "https://netlify-mcp.netlify.app/proxy/eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..UMOFHCKI9OB6XsxA.ZSX_eexexKCJYXsZMb6M496KTBgq2m5awlkYu7aD7hmvTzDwbo1Woxzjsk1AOHcrKbtNxgpURNdxgtqCuckDm77ZhbZoKA5ht2Asjfg6-DfiIHMjS_lINYVPlK959VLD1F09MOEDpE2rEW0nBb6CxAZ3oPA7e5aBBQ-ybek3El9l_jEpP0DLyrwh8B-hDr8QDc1W1iUdhw83PqOPuCAFNvtpCznL20S0LZuRqHY-z3XxDlfoSm4UYMkBBcM_vMe6l5QCr33qYm89-6v8PSq6x4xqBtvuNpbzK-kMyoWwXzPrjbq3gq_hQ5wE6opwqNCfDeETvtfQZ-1rMDc0P-7siL5lOGXnX0RWzztmnDJxU92jq8bUG6AviZ6cYoNOo9LrGXW7D__6._nh7s8TkHnHmpLx9Fe6SsQ"
