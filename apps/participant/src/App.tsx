@@ -14,7 +14,7 @@ type Round={id:string;round_number:number;title:string;status:string;is_optional
 type AttemptSummary={round_id:string;status:string;score:number;result_released_at:string|null;submitted_at:string|null}
 type HistoryItem={id:string;status:string;score:number;result_released_at:string|null;released:boolean;round:{round_number:number;title:string}|null;responses?:{question_id:string;stem:string;selected_option:string|null;correct_option:string;is_correct:boolean;points_awarded:number;explanation:string|null}[]}
 
-const MAGIC_LINK_REDIRECT='https://gericare-quiz.vercel.app'
+const MAGIC_LINK_REDIRECT='https://gericare-conference-quiz.netlify.app'
 
 export default function App(){
  const[screen,setScreen]=useState<Screen>('auth'),[session,setSession]=useState<Session|null>(null),[event,setEvent]=useState<EventInfo|null>(null),[participant,setParticipant]=useState<Participant|null>(null)
