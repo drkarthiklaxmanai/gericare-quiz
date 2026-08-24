@@ -1,24 +1,27 @@
-name: Deploy GERICARE Participant to Netlify
+name: Deploy GERICARE Unified Site to Netlify
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - 'apps/participant/**'
+      - 'apps/**'
+      - 'packages/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'netlify.toml'
       - '.github/workflows/deploy-netlify-participant.yml'
+
+concurrency:
+  group: gericare-netlify-production
+  cancel-in-progress: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/participant
     steps:
       - uses: actions/checkout@v4
-      - name: Prepare Netlify production URLs and branding
-        run: |
-          sed -i 's#https://gericare-quiz.vercel.app#https://gericare-conference-quiz.netlify.app#g' src/App.tsx
-          sed -i 's/GERiCARE/GERICARE/g' src/App.tsx index.html
-      - name: Deploy to Netlify
+      - name: Deploy unified monorepo to canonical Netlify site
         run: npx -y @netlify/mcp@latest --site-id 57d86db6-3af8-42a6-a321-dbe4d4edb810 --proxy-path "https://netlify-mcp.netlify.app/proxy/eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..Pi2i3yPUoTcknrg2.Eik0JdGBsmq96I2moFuvtXvScc8iCeAHUuPQ_oPE3sRpO_fdUvnMU59SXwFpdoCcv0JMpQYqNWiKONI0BGG1XRxUnVrPIxLZMkT241PsjTTtDYJnNqCpDdlAAItnx2OGUjeFuaFicJIbaV_-TGdiZh2RvcJsB_Xo2-VOUcUoIzZidgYsvZJrUlk9pQvY2e5_Dsa5QXPjcFxPx92WEuRmdIqV1UZBytkEgirRwdwanxSxHF6wbwMVRXqJHjhNWJyfzFD6V553XZhQOvCDdWqadq1_hfNTAzeUAWcA4CzeEjpJXBb6adLYM6NzvV40Edc7cG5Jah2gCn0W1BrauZomPDs0KQf4V_Ks3vrSWwDSx-p3x6_GmkzJSHpBMv2qI3b5ZUZrk-Al.yzVolc1RwS4OrP6WWPFSxw"
