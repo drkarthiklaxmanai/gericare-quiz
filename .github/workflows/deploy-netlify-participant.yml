@@ -25,3 +25,4 @@ jobs:
       - uses: actions/checkout@v4
       - name: Deploy unified monorepo to canonical Netlify site
         run: npx -y @netlify/mcp@latest --site-id 57d86db6-3af8-42a6-a321-dbe4d4edb810 --proxy-path "https://netlify-mcp.netlify.app/proxy/eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..Pi2i3yPUoTcknrg2.Eik0JdGBsmq96I2moFuvtXvScc8iCeAHUuPQ_oPE3sRpO_fdUvnMU59SXwFpdoCcv0JMpQYqNWiKONI0BGG1XRxUnVrPIxLZMkT241PsjTTtDYJnNqCpDdlAAItnx2OGUjeFuaFicJIbaV_-TGdiZh2RvcJsB_Xo2-VOUcUoIzZidgYsvZJrUlk9pQvY2e5_Dsa5QXPjcFxPx92WEuRmdIqV1UZBytkEgirRwdwanxSxHF6wbwMVRXqJHjhNWJyfzFD6V553XZhQOvCDdWqadq1_hfNTAzeUAWcA4CzeEjpJXBb6adLYM6NzvV40Edc7cG5Jah2gCn0W1BrauZomPDs0KQf4V_Ks3vrSWwDSx-p3x6_GmkzJSHpBMv2qI3b5ZUZrk-Al.yzVolc1RwS4OrP6WWPFSxw"
+      # This workflow is the only production Netlify deploy path.
