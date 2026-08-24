@@ -17,7 +17,8 @@ alter table public.presentation_state enable row level security;
 drop policy if exists "presentation admins read" on public.presentation_state;
 create policy "presentation admins read" on public.presentation_state for select to authenticated using ((select private.is_event_admin(event_id)));
 drop policy if exists "presentation projector read" on public.presentation_state;
-create policy "presentation projector read" on public.presentation_state for select to authenticated using (true);
+create policy "presentation projector read" on public.presentation_state for select to anon using (true);
+grant select on public.presentation_state to anon;
 create or replace function public.publish_presentation_state(
   p_event_id uuid,
   p_state text,
