@@ -1,43 +1,61 @@
 [build]
-  command = "pnpm --filter @gericare/participant build"
-  publish = "apps/participant/dist"
+  command = "pnpm build:site"
+  publish = "site-dist"
 
 [build.environment]
   NODE_VERSION = "20"
+  PNPM_VERSION = "10.15.0"
 
-# Keep the participant app on the canonical Netlify site.
+# Canonical nested applications.
 [[redirects]]
   from = "/control"
-  to = "https://gericare-control-room.netlify.app"
-  status = 302
-
-[[redirects]]
-  from = "/control/*"
-  to = "https://gericare-control-room.netlify.app/:splat"
-  status = 302
+  to = "/control/"
+  status = 301
 
 [[redirects]]
   from = "/projector"
-  to = "https://gericare-projector.netlify.app"
-  status = 302
-
-[[redirects]]
-  from = "/projector/*"
-  to = "https://gericare-projector.netlify.app/:splat"
-  status = 302
+  to = "/projector/"
+  status = 301
 
 [[redirects]]
   from = "/admin"
-  to = "https://gericare-admin-console.netlify.app"
-  status = 302
+  to = "/admin/"
+  status = 301
+
+# SPA fallbacks. Existing JS/CSS assets take precedence because force is false.
+[[redirects]]
+  from = "/control/*"
+  to = "/control/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/projector/*"
+  to = "/projector/index.html"
+  status = 200
 
 [[redirects]]
   from = "/admin/*"
-  to = "https://gericare-admin-console.netlify.app/:splat"
-  status = 302
+  to = "/admin/index.html"
+  status = 200
 
-# Vite SPA fallback for the participant app. Keep this last.
+# Participant app is the root SPA. Keep this last.
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+[[headers]]
+  for = "/control/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+
+[[headers]]
+  for = "/admin/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
