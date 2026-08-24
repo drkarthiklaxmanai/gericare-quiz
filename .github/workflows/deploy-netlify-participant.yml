@@ -23,6 +23,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Deploy unified monorepo to canonical Netlify site
-        run: npx -y @netlify/mcp@latest --site-id 57d86db6-3af8-42a6-a321-dbe4d4edb810 --proxy-path "https://netlify-mcp.netlify.app/proxy/eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..Pi2i3yPUoTcknrg2.Eik0JdGBsmq96I2moFuvtXvScc8iCeAHUuPQ_oPE3sRpO_fdUvnMU59SXwFpdoCcv0JMpQYqNWiKONI0BGG1XRxUnVrPIxLZMkT241PsjTTtDYJnNqCpDdlAAItnx2OGUjeFuaFicJIbaV_-TGdiZh2RvcJsB_Xo2-VOUcUoIzZidgYsvZJrUlk9pQvY2e5_Dsa5QXPjcFxPx92WEuRmdIqV1UZBytkEgirRwdwanxSxHF6wbwMVRXqJHjhNWJyfzFD6V553XZhQOvCDdWqadq1_hfNTAzeUAWcA4CzeEjpJXBb6adLYM6NzvV40Edc7cG5Jah2gCn0W1BrauZomPDs0KQf4V_Ks3vrSWwDSx-p3x6_GmkzJSHpBMv2qI3b5ZUZrk-Al.yzVolc1RwS4OrP6WWPFSxw"
-      # This workflow is the only production Netlify deploy path.
+      - name: Deploy unified monorepo to gericarequiz on current Netlify account
+        run: npx -y @netlify/mcp@latest --site-id 3a00b1a2-56cc-4066-882a-66e71e88de22 --proxy-path "https://netlify-mcp.netlify.app/proxy/eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..5eX_2BdTVBOo6O02.R4SDPvHnCMG5JdeLcIJFGVtWJgOVpnfhiAMLNgWTkqR6Y8OyrZpHccT9aGjyXa4DdYNneYql7htxLLo0HA80E0TZuXJ4DRNrtuITiTXEyfxWk4Y4A4piv7VMILCXAO4qzf6aAD4Dp35CTkOyJiXCar41gXHcSaausJTODMLiBOMqRREcZCjTVXNfKJUp2QOY9ETMOP62Vq3X1KHznjLsdg8pwNRytcCkPCwSaB-cAulieFOwvkojW47QBBIjlZgRpap2PaIx66VURMJZaloenJwLFVICmwPcv-meqjvV0fPz4FaBYhFyt-4dSeauMIoy0IqcGNUYCTABxCPw9ber8gchy8sVm-lBkV2-7JTaamYvvqRv2ROzo0yNUS1OaJXwa-DsszEz.SLj-NeFHhk4eir7GrS2wHQ"
