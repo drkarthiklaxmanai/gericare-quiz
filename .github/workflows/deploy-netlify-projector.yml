@@ -3,7 +3,7 @@ name: Deploy GERICARE Projector to Netlify
 on:
   workflow_dispatch:
   push:
-    branches: [feat/projector-v2]
+    branches: [main]
     paths:
       - 'apps/projector/**'
       - '.github/workflows/deploy-netlify-projector.yml'
