@@ -3,7 +3,7 @@ name: Deploy GERICARE Admin to Netlify
 on:
   workflow_dispatch:
   push:
-    branches: [feat/admin-v2]
+    branches: [main]
     paths:
       - 'apps/admin/**'
       - '.github/workflows/deploy-netlify-admin.yml'
@@ -17,6 +17,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Normalize GERICARE branding
-        run: sed -i 's/GERiCARE/GERICARE/g' src/main.tsx index.html || true
+        run: sed -i 's/GERiCARE/GERICARE/g' src/main.tsx src/auth-entry.ts index.html || true
       - name: Deploy to Netlify
         run: npx -y @netlify/mcp@latest --site-id f9f68b87-3e64-41e5-b5fb-b53b3337adad --proxy-path "https://netlify-mcp.netlify.app/proxy/eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..llpaEXms7OjOVqOV.ZGScI48vLXqLSrtISXHOyvEAqQ13p6LFmZPSj7s_fqUQM_4NYX810RX9m6k984b45a4_nvrmHJqWkLrx0dIwcEn9If7uc_wbvcA9EwgpaJ2DOipyTlh8JExFy08z1v74tt_0dj2K3LDFiW3v-0hibKtRe0BIsR0pI1mQW2vT35R5XfxlyZPlldJ6_cxw4KhKch5tt_1eLtSG9RiGlZ_ohyPrqglvnvYg7yIvPtyxx3SchxTameQ-NmTbvNab-7ldlr0aUFUDaurg-o0y535Ftqud3y-jzF0Dd5HZKSXsDoEag27HP_NPSgc-rR0SSyTF42rO_wgSETYd9Gbf3lm-noi6neZfRPKUVxpvILKHMPkXX-T-Mslb9_ANWLx4JY7haLPX3CL2.zUNBsVp_tyTU0NF_sHeMHA"
