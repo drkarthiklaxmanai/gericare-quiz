@@ -1,0 +1,22 @@
+name: Deploy GERICARE Projector to Netlify
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/projector-v2]
+    paths:
+      - 'apps/projector/**'
+      - '.github/workflows/deploy-netlify-projector.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/projector
+    steps:
+      - uses: actions/checkout@v4
+      - name: Normalize GERICARE branding
+        run: sed -i 's/GERiCARE/GERICARE/g' src/main.tsx index.html || true
+      - name: Deploy to Netlify
+        run: npx -y @netlify/mcp@latest --site-id f25de856-6e8d-4401-b549-58d363aaecf6 --proxy-path "https://netlify-mcp.netlify.app/proxy/eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..Wn3WAibJbgkLxvsh.uqbgU4bHfwB8AwRERAKnBeDQc9OUS1fDiquI9Bw7bgYJIANs_hjvsO-VOL5B1x1AEyPvldOOD_WaqJb-4lzJUwFbviOdinREAHtyCLvoy6UV1IOw3F4cn_YLIjeXoOX1KZAqF9Id2YpQJ5DLj1W_8msw61W3oSgvRZFCR553U_lthaRiWoC--Gda_ihIMPO_sQBxTRSHIdT2VSqivNzT-yZ-u7jrm4Q8mMmF7loeMpv9yjRVcIdwjoX-zMvOxkx_9xLJS1xc7udCnJY-KtOeLRWtDtEiaWvWbSytodbpZ-03YZAHAClmRc-xIc-uNHO5WXZVDMS8xQPoFz8pjADKLhhiRlTujFRQfAlTFGWZGYzuisQPODP4A3S_RvsR_CO25ncCjzcH.HbtapdvIxd3GbA3CnaQz4w"
