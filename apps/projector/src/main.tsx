@@ -37,17 +37,23 @@ function normalizeBoard(value:unknown):BoardRow[]{
   return asArray(value).map((row,i)=>{
     const r=(row&&typeof row==='object'?row:{}) as Record<string,unknown>;
     const rank=Number(r.rank??i+1)||i+1;
-    const name=String(
-      r.display_name??r.name??r.full_name??r.participant_name??'Participant'
-    ).trim()||'Participant';
+    const name=String(r.display_name??r.name??r.full_name??r.participant_name??'Participant').trim()||'Participant';
     const score=Number(r.score??r.total_score??r.points??0)||0;
     return {rank,name,score};
   });
 }
 
-function normalizeOptions(value:unknown):string[]{
+function normalizeOptions(value:unknown):{key:string;text:string;correct?:boolean}[]{
   if(!Array.isArray(value))return [];
-  return value.map(x=>typeof x==='string'?x:String((x as {text?:string;label?:string})?.text??(x as {label?:string})?.label??x));
+  return value.map((x,i)=>{
+    if(typeof x==='string')return{key:String.fromCharCode(65+i),text:x};
+    const o=(x&&typeof x==='object'?x:{}) as Record<string,unknown>;
+    return{
+      key:String(o.key??o.option_key??String.fromCharCode(65+i)),
+      text:String(o.text??o.option_text??o.label??''),
+      correct:!!(o.correct??o.is_correct),
+    };
+  });
 }
 
 function App(){
@@ -57,20 +63,12 @@ function App(){
   useEffect(()=>{
     if(!supabase)return;
     const load=async()=>{
-      const {data}=await supabase
-        .from('presentation_state')
-        .select('*')
-        .order('updated_at',{ascending:false})
-        .limit(1)
-        .maybeSingle();
+      const {data}=await supabase.from('presentation_state').select('*').order('updated_at',{ascending:false}).limit(1).maybeSingle();
       if(data)setView(data as DisplayState);
     };
     void load();
-    const ch=supabase
-      .channel('projector-display')
-      .on('postgres_changes',{event:'*',schema:'public',table:'presentation_state'},p=>{
-        if(p.new)setView(p.new as DisplayState);
-      })
+    const ch=supabase.channel('projector-display')
+      .on('postgres_changes',{event:'*',schema:'public',table:'presentation_state'},p=>{if(p.new)setView(p.new as DisplayState)})
       .subscribe(s=>setConnected(s==='SUBSCRIBED'));
     return()=>{supabase.removeChannel(ch)};
   },[]);
@@ -81,25 +79,39 @@ function App(){
   const content=()=>{
     switch(view.state){
       case'RULES':
-        return <><small>RULES</small><h1>How to Play</h1><p>Answer each question before your timer expires.</p></>;
+        return <><small>RULES</small><h1>How to Play</h1><p>Answer on your device before the timer ends.</p></>;
+      case'ROUND_LIVE':
+        return <><small>LIVE</small><h1>{view.title??`Round ${view.round_number??''}`}</h1><p>Answer on your devices now</p></>;
+      case'ROUND_CLOSED':
+        return <><small>ROUND CLOSED</small><h1>{view.title??`Round ${view.round_number??''}`}</h1><p>Answers locked</p></>;
+      case'RECAP':
       case'QUESTION':
-        return <><small>ROUND {view.round_number}</small><h2>{view.question}</h2><div className="options">{options.map((x,i)=><div key={i}><b>{String.fromCharCode(65+i)}</b>{x}</div>)}</div></>;
       case'ANSWER_REVEAL':
-        return <><small>ANSWER</small><h1>{view.answer??'Correct answer'}</h1></>;
+        return <>
+          <small>ROUND {view.round_number} · REVIEW</small>
+          <h2>{view.question}</h2>
+          <div className="options">
+            {options.map((o,i)=>(
+              <div key={i} className={o.correct||(view.answer&&o.key===view.answer)?'correct':''}>
+                <b>{o.key}</b>{o.text}
+              </div>
+            ))}
+          </div>
+          {view.answer&&<p className="answer-line">Correct: <strong>{view.answer}</strong></p>}
+          {view.explanation&&<p className="expl">{view.explanation}</p>}
+        </>;
       case'EXPLANATION':
         return <><small>EXPLANATION</small><h2>{view.explanation}</h2></>;
       case'ROUND_TOP10':
       case'LEADERBOARD':
         return <>
           <small>{view.state==='ROUND_TOP10'?'ROUND TOP 10':'LEADERBOARD'}</small>
-          <h1>Leaderboard</h1>
+          <h1>{view.title??'Leaderboard'}</h1>
           <div className="board">
             {board.length
               ? board.map(x=>(
                   <div key={`${x.rank}-${x.name}`}>
-                    <b>#{x.rank}</b>
-                    <span>{x.name}</span>
-                    <strong>{x.score}</strong>
+                    <b>#{x.rank}</b><span>{x.name}</span><strong>{x.score}</strong>
                   </div>
                 ))
               : <div className="empty">No standings yet</div>}

@@ -1,4 +1,4 @@
-import React,{useEffect,useMemo,useRef,useState} from 'react';
+import React,{useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {createClient} from '@supabase/supabase-js';
 import './styles.css';
@@ -8,11 +8,17 @@ const key=import.meta.env.VITE_SUPABASE_ANON_KEY as string|undefined;
 const supabase=url&&key?createClient(url,key):null;
 
 type Round={id:string;event_id:string;round_number:number;title:string;status:string;questions_locked:boolean};
-type Attempt={id:string;participant_id:string;round_id:string;status:string;score:number;started_at:string|null;deadline_at:string|null;submitted_at:string|null};
+type Attempt={id:string;participant_id:string;round_id:string;status:string;score:number};
 type Integrity={id:number;participant_id:string|null;event:string;occurred_at:string};
 type Board={rank:number;participant_id?:string;display_name?:string;name?:string;score:number};
 type Finalist={id:string;participant_id:string;preliminary_score:number;rank:number;status:string};
 type Sudden={id:string;question_number:number;question_id:string};
+type RQ={question_id:string;canonical_order:number;stem:string;explanation:string|null;options:{key:string;text:string;correct:boolean}[]};
+type ShowOrder='teach'|'compete'; // teach = Q&A then scores; compete = Top10 then Q&A
+type ShowStep=
+  |{id:string;kind:'waiting'|'rules'|'live'|'closed'|'recap'|'top10'|'overall';label:string;qIndex?:number};
+
+const QA_SECONDS_DEFAULT=12;
 
 function errText(e:unknown):string{
   if(e==null)return 'Unknown error';
@@ -43,18 +49,23 @@ async function rpc(name:string,args:Record<string,unknown>={}){
   return data;
 }
 
-/** Human next step for selected round */
-function nextStep(r:Round|null,locked:boolean,openOther:Round|undefined):{title:string;detail:string;primary?:'control'|'open'|'close'|'release';primaryLabel?:string;blocked?:string}{
-  if(!r)return{title:'Select a round',detail:'Tap a round below to control it.'};
-  if(!locked)return{title:'Take control first',detail:'Only the operator with live control can open or close rounds.',primary:'control',primaryLabel:'Take control'};
-  if(!r.questions_locked)return{title:'Questions not frozen',detail:'In Admin, put 3 questions in this round and Lock the set first.',blocked:'Go to Admin → freeze this round’s 3 questions'};
-  if(openOther&&openOther.id!==r.id)return{title:`Close Round ${openOther.round_number} first`,detail:'Only one round can be open at a time.',blocked:`Select R${openOther.round_number} and press Close`};
-  const s=r.status;
-  if(s==='draft'||s==='locked')return{title:`Open Round ${r.round_number}`,detail:'Participants can start answering once you open.',primary:'open',primaryLabel:'Open round'};
-  if(s==='open')return{title:`Close Round ${r.round_number}`,detail:'Stop new answers, then release results when ready.',primary:'close',primaryLabel:'Close round'};
-  if(s==='closed')return{title:'Release results',detail:'Publish scores and update the leaderboard / projector.',primary:'release',primaryLabel:'Release results'};
-  if(s==='released'||s==='completed')return{title:`Round ${r.round_number} finished`,detail:'Results released. Select the next round or run Final ops.'};
-  return{title:`Round ${r.round_number}`,detail:`Status: ${s}`};
+function nextStep(r:Round|null,locked:boolean,openOther:Round|undefined){
+  if(!r)return{title:'Select a round',detail:'Tap a round below.',primary:undefined as undefined,primaryLabel:undefined as undefined,blocked:undefined as string|undefined};
+  if(!locked)return{title:'Take control first',detail:'Required before open/close/release.',primary:'control' as const,primaryLabel:'Take control',blocked:undefined};
+  if(!r.questions_locked)return{title:'Questions not frozen',detail:'Admin must lock 3 questions for this round.',primary:undefined,primaryLabel:undefined,blocked:'Admin → freeze set'};
+  if(openOther&&openOther.id!==r.id)return{title:`Close R${openOther.round_number} first`,detail:'Only one open round.',primary:undefined,primaryLabel:undefined,blocked:`Select R${openOther.round_number} → Close`};
+  if(r.status==='draft'||r.status==='locked')return{title:`Open Round ${r.round_number}`,detail:'Starts the round for participants + projector live.',primary:'open' as const,primaryLabel:'Open round',blocked:undefined};
+  if(r.status==='open')return{title:`Close Round ${r.round_number}`,detail:'Stops answers, then run the post-round show.',primary:'close' as const,primaryLabel:'Close round',blocked:undefined};
+  if(r.status==='closed')return{title:'Release results',detail:'Builds leaderboard; projector follows your show order.',primary:'release' as const,primaryLabel:'Release results',blocked:undefined};
+  return{title:`Round ${r.round_number} done`,detail:'Pick next round or Final ops.',primary:undefined,primaryLabel:undefined,blocked:undefined};
+}
+
+function buildPostCloseSteps(order:ShowOrder,qCount:number):ShowStep[]{
+  const recaps:ShowStep[]=Array.from({length:qCount},(_,i)=>({id:`recap-${i}`,kind:'recap' as const,label:`Q&A ${i+1}/${qCount}`,qIndex:i}));
+  const top:ShowStep={id:'top10',kind:'top10',label:'Round top 10'};
+  const overall:ShowStep={id:'overall',kind:'overall',label:'Overall board'};
+  if(order==='teach')return[{id:'closed',kind:'closed',label:'Round closed'},...recaps,top,overall];
+  return[{id:'closed',kind:'closed',label:'Round closed'},top,...recaps,overall];
 }
 
 function App(){
@@ -72,6 +83,18 @@ function App(){
   const[locked,setLocked]=useState(false);
   const lockEventRef=useRef<string|null>(null);
 
+  // Projector show
+  const[showOrder,setShowOrder]=useState<ShowOrder>('teach');
+  const[autoFollow,setAutoFollow]=useState(true);
+  const[qaSeconds,setQaSeconds]=useState(QA_SECONDS_DEFAULT);
+  const[paused,setPaused]=useState(false);
+  const[roundQs,setRoundQs]=useState<RQ[]>([]);
+  const[playlist,setPlaylist]=useState<ShowStep[]>([]);
+  const[playIdx,setPlayIdx]=useState(0);
+  const timerRef=useRef<number|null>(null);
+  const boardRef=useRef<Board[]>([]);
+  boardRef.current=board;
+
   const resolveEvent=async()=>{
     if(eventId)return eventId;
     if(!supabase)throw Error('Supabase not configured');
@@ -85,48 +108,67 @@ function App(){
     return data.id;
   };
 
+  const loadRoundQuestions=async(roundId:string)=>{
+    if(!supabase)return;
+    const{data:rq,error}=await supabase.from('round_questions').select('question_id,canonical_order').eq('round_id',roundId).order('canonical_order');
+    if(error)throw error;
+    const rows=rq??[];
+    if(!rows.length){setRoundQs([]);return}
+    const ids=rows.map(r=>r.question_id);
+    const[{data:qs},{data:opts}]=await Promise.all([
+      supabase.from('questions').select('id,stem,explanation').in('id',ids),
+      supabase.from('question_options').select('question_id,option_key,option_text,is_correct').in('question_id',ids).order('option_key'),
+    ]);
+    const qmap=new Map((qs??[]).map(x=>[x.id,x]));
+    const byQ=new Map<string,{key:string;text:string;correct:boolean}[]>();
+    for(const o of opts??[]){
+      const list=byQ.get(o.question_id)??[];
+      list.push({key:o.option_key,text:o.option_text,correct:!!o.is_correct});
+      byQ.set(o.question_id,list);
+    }
+    setRoundQs(rows.map(r=>{
+      const q=qmap.get(r.question_id);
+      return{
+        question_id:r.question_id,
+        canonical_order:r.canonical_order,
+        stem:q?.stem??'(missing)',
+        explanation:q?.explanation??null,
+        options:byQ.get(r.question_id)??[],
+      };
+    }));
+  };
+
   const load=async()=>{
-    if(!supabase){setMessage('Configure Supabase env');setMsgKind('err');return}
+    if(!supabase){setMessage('Configure Supabase');setMsgKind('err');return}
     try{
       const eid=await resolveEvent();
       const [{data:r,error:re},{data:a,error:ae},{data:i,error:ie},{data:s,error:se},{data:f,error:fe},{data:sd,error:sde}]=await Promise.all([
         supabase.from('rounds').select('id,event_id,round_number,title,status,questions_locked').eq('event_id',eid).order('round_number'),
-        supabase.from('attempts').select('id,participant_id,round_id,status,score,started_at,deadline_at,submitted_at').eq('event_id',eid).order('started_at',{ascending:false}).limit(500),
+        supabase.from('attempts').select('id,participant_id,round_id,status,score').eq('event_id',eid).order('started_at',{ascending:false}).limit(500),
         supabase.from('integrity_events').select('id,participant_id,event,occurred_at').eq('event_id',eid).order('occurred_at',{ascending:false}).limit(50),
         supabase.from('leaderboard_snapshots').select('payload').eq('event_id',eid).order('created_at',{ascending:false}).limit(1).maybeSingle(),
         supabase.from('finalists').select('id,participant_id,preliminary_score,rank,status').eq('event_id',eid).order('rank'),
         supabase.from('sudden_death_attempts').select('id,question_number,question_id').eq('event_id',eid).order('question_number',{ascending:false}).limit(1).maybeSingle(),
       ]);
       if(re||ae||ie||se||fe||sde)throw(re||ae||ie||se||fe||sde);
-      setRounds(r??[]);
-      setAttempts(a??[]);
-      setIntegrity(i??[]);
-      setFinalists(f??[]);
-      setSudden(sd??null);
+      setRounds(r??[]);setAttempts(a??[]);setIntegrity(i??[]);setFinalists(f??[]);setSudden(sd??null);
       const payload=s?.payload as any;
       const rows=Array.isArray(payload)?payload:(payload?.rows??payload?.leaderboard??[]);
       setBoard(normalizeBoard(rows??[]));
       setSelected(prev=>{
-        if(prev){
-          const updated=(r??[]).find(x=>x.id===prev.id);
-          if(updated)return updated;
-        }
-        const open=(r??[]).find(x=>x.status==='open');
-        return open??(r??[])[0]??null;
+        if(prev){const u=(r??[]).find(x=>x.id===prev.id);if(u)return u}
+        return (r??[]).find(x=>x.status==='open')??(r??[])[0]??null;
       });
     }catch(e){setMessage(errText(e));setMsgKind('err')}
   };
 
-  useEffect(()=>{
-    void load();
-    if(!supabase)return;
+  useEffect(()=>{void load();if(!supabase)return;
     const ch=supabase.channel('control-room-live')
       .on('postgres_changes',{event:'*',schema:'public',table:'rounds'},()=>void load())
       .on('postgres_changes',{event:'*',schema:'public',table:'attempts'},()=>void load())
       .on('postgres_changes',{event:'INSERT',schema:'public',table:'integrity_events'},()=>void load())
       .on('postgres_changes',{event:'INSERT',schema:'public',table:'leaderboard_snapshots'},()=>void load())
       .on('postgres_changes',{event:'*',schema:'public',table:'finalists'},()=>void load())
-      .on('postgres_changes',{event:'INSERT',schema:'public',table:'sudden_death_attempts'},()=>void load())
       .subscribe();
     return()=>{supabase.removeChannel(ch)};
   },[eventId]);
@@ -138,41 +180,13 @@ function App(){
     return()=>window.clearInterval(id);
   },[locked]);
 
-  const run=async(label:string,fn:()=>Promise<unknown>)=>{
-    try{
-      setMessage(label+'…');setMsgKind('info');
-      await fn();
-      setMessage(label+' — done');setMsgKind('ok');
-      await load();
-    }catch(e){setMessage(errText(e));setMsgKind('err')}
-  };
+  useEffect(()=>{
+    if(selected)void loadRoundQuestions(selected.id).catch(e=>{setMessage(errText(e));setMsgKind('err')});
+  },[selected?.id]);
 
-  const takeControl=()=>selected&&run('Take control',async()=>{
-    await rpc('acquire_control_lock',{p_event_id:selected.event_id});
-    lockEventRef.current=selected.event_id;
-    setLocked(true);
-  });
-
-  const openRound=()=>selected&&run('Open round',async()=>{
-    const other=rounds.find(x=>x.status==='open'&&x.id!==selected.id);
-    if(other)throw Error(`Close Round ${other.round_number} first`);
-    if(!selected.questions_locked)throw Error('Freeze 3 questions in Admin first');
-    await rpc('open_round',{p_event_id:selected.event_id,p_round_id:selected.id});
-  });
-
-  const closeRound=()=>selected&&run('Close round',()=>rpc('close_round',{p_event_id:selected.event_id,p_round_id:selected.id}));
-
-  const releaseResults=()=>selected&&run('Release results',async()=>{
-    await rpc('release_round_results',{p_event_id:selected.event_id,p_round_id:selected.id});
-    await rpc('build_round_top10',{p_event_id:selected.event_id,p_round_id:selected.id});
-    await rpc('build_overall_leaderboard',{p_event_id:selected.event_id});
-  });
-
-  const openOther=rounds.find(r=>r.status==='open');
-  const step=nextStep(selected,locked,openOther&&selected&&openOther.id!==selected.id?openOther:undefined);
-
-  const present=(state:string,payload:Record<string,unknown>={})=>
-    eventId&&run(`Projector → ${state}`,()=>rpc('publish_presentation_state',{
+  const publish=useCallback(async(state:string,payload:Record<string,unknown>={})=>{
+    if(!eventId)return;
+    await rpc('publish_presentation_state',{
       p_event_id:eventId,
       p_state:state,
       p_round_id:selected?.id??null,
@@ -181,11 +195,149 @@ function App(){
       p_options:[],
       p_answer:null,
       p_explanation:null,
-      p_top10:state.includes('LEADER')||state.includes('TOP10')?normalizeBoard(board):[],
+      p_top10:[],
       p_media:[],
       ...payload,
-    }));
+    });
+  },[eventId,selected?.id]);
 
+  const publishStep=useCallback(async(step:ShowStep,r:Round|null,qs:RQ[])=>{
+    if(!r)return;
+    if(step.kind==='live'){
+      await publish('ROUND_LIVE',{p_title:`Round ${r.round_number} — ${r.title}`,p_round_id:r.id});
+      return;
+    }
+    if(step.kind==='closed'){
+      await publish('ROUND_CLOSED',{p_title:`Round ${r.round_number}`,p_round_id:r.id});
+      return;
+    }
+    if(step.kind==='recap'){
+      const q=qs[step.qIndex??0];
+      if(!q)return;
+      const correct=q.options.find(o=>o.correct);
+      await publish('RECAP',{
+        p_round_id:r.id,
+        p_title:`Round ${r.round_number}`,
+        p_question:q.stem,
+        p_options:q.options.map(o=>({key:o.key,text:o.text,correct:o.correct})),
+        p_answer:correct?.key??null,
+        p_explanation:q.explanation,
+      });
+      return;
+    }
+    if(step.kind==='top10'){
+      await publish('ROUND_TOP10',{p_title:`Round ${r.round_number} · Top 10`,p_round_id:r.id,p_top10:normalizeBoard(boardRef.current)});
+      return;
+    }
+    if(step.kind==='overall'){
+      await publish('LEADERBOARD',{p_title:'Overall leaderboard',p_top10:normalizeBoard(boardRef.current)});
+      return;
+    }
+    if(step.kind==='waiting')await publish('WAITING',{p_title:'GERiCARE Conference Quiz'});
+    if(step.kind==='rules')await publish('RULES',{p_title:'How to Play'});
+  },[publish]);
+
+  const clearTimer=()=>{if(timerRef.current){window.clearTimeout(timerRef.current);timerRef.current=null}};
+
+  const goToIndex=useCallback(async(idx:number,list:ShowStep[],r:Round|null,qs:RQ[])=>{
+    if(!list.length||idx<0||idx>=list.length)return;
+    setPlayIdx(idx);
+    setMessage(`Projector: ${list[idx].label}`);setMsgKind('info');
+    try{await publishStep(list[idx],r,qs)}catch(e){setMessage(errText(e));setMsgKind('err')}
+  },[publishStep]);
+
+  // Timed advance on recap steps only
+  useEffect(()=>{
+    clearTimer();
+    if(paused||!playlist.length)return;
+    const step=playlist[playIdx];
+    if(!step||step.kind!=='recap')return;
+    timerRef.current=window.setTimeout(()=>{
+      if(playIdx<playlist.length-1)void goToIndex(playIdx+1,playlist,selected,roundQs);
+    },Math.max(5,qaSeconds)*1000);
+    return clearTimer;
+  },[playIdx,playlist,paused,qaSeconds,selected,roundQs,goToIndex]);
+
+  const startPostCloseShow=async(r:Round)=>{
+    await loadRoundQuestions(r.id);
+    // re-read after load — use functional path with fresh fetch
+    if(!supabase)return;
+    const{data:rq}=await supabase.from('round_questions').select('question_id,canonical_order').eq('round_id',r.id).order('canonical_order');
+    const n=(rq??[]).length||roundQs.length||3;
+    const steps=buildPostCloseSteps(showOrder,n);
+    setPlaylist(steps);
+    setPlayIdx(0);
+    setPaused(false);
+    // Load qs into local for first publish
+    await loadRoundQuestions(r.id);
+  };
+
+  const run=async(label:string,fn:()=>Promise<unknown>)=>{
+    try{setMessage(label+'…');setMsgKind('info');await fn();setMessage(label+' — done');setMsgKind('ok');await load()}
+    catch(e){setMessage(errText(e));setMsgKind('err')}
+  };
+
+  const takeControl=()=>selected&&run('Take control',async()=>{
+    await rpc('acquire_control_lock',{p_event_id:selected.event_id});
+    lockEventRef.current=selected.event_id;setLocked(true);
+  });
+
+  const openRound=()=>selected&&run('Open round',async()=>{
+    const other=rounds.find(x=>x.status==='open'&&x.id!==selected.id);
+    if(other)throw Error(`Close Round ${other.round_number} first`);
+    if(!selected.questions_locked)throw Error('Freeze 3 questions in Admin first');
+    await rpc('open_round',{p_event_id:selected.event_id,p_round_id:selected.id});
+    if(autoFollow){
+      const live:ShowStep={id:'live',kind:'live',label:`R${selected.round_number} live`};
+      setPlaylist([live]);setPlayIdx(0);
+      await publishStep(live,selected,roundQs);
+    }
+  });
+
+  const closeRound=()=>selected&&run('Close round',async()=>{
+    await rpc('close_round',{p_event_id:selected.event_id,p_round_id:selected.id});
+    if(autoFollow){
+      await startPostCloseShow(selected);
+      // publish first post-close step after qs loaded
+      const{data:rq}=await supabase!.from('round_questions').select('question_id').eq('round_id',selected.id);
+      const n=(rq??[]).length||3;
+      const steps=buildPostCloseSteps(showOrder,n);
+      setPlaylist(steps);setPlayIdx(0);
+      await loadRoundQuestions(selected.id);
+      // small delay for state
+      await new Promise(res=>setTimeout(res,100));
+    }
+  });
+
+  // After close playlist set, publish step 0 when roundQs updates
+  const postCloseBoot=useRef(false);
+  useEffect(()=>{
+    if(!autoFollow||!selected||selected.status!=='closed')return;
+    if(!playlist.length||playlist[0]?.kind!=='closed')return;
+    if(playIdx!==0)return;
+    void publishStep(playlist[0],selected,roundQs);
+  },[playlist,roundQs,selected?.status]);
+
+  const releaseResults=()=>selected&&run('Release results',async()=>{
+    await rpc('release_round_results',{p_event_id:selected.event_id,p_round_id:selected.id});
+    await rpc('build_round_top10',{p_event_id:selected.event_id,p_round_id:selected.id});
+    await rpc('build_overall_leaderboard',{p_event_id:selected.event_id});
+    await load();
+    if(autoFollow){
+      // Jump to first scores step in current playlist, or build if empty
+      let list=playlist;
+      if(!list.length){
+        list=buildPostCloseSteps(showOrder,roundQs.length||3);
+        setPlaylist(list);
+      }
+      const scoreIdx=list.findIndex(s=>s.kind==='top10');
+      if(scoreIdx>=0)await goToIndex(scoreIdx,list,selected,roundQs);
+      else await publish('ROUND_TOP10',{p_title:`Round ${selected.round_number} · Top 10`,p_top10:normalizeBoard(boardRef.current)});
+    }
+  });
+
+  const openOther=rounds.find(r=>r.status==='open');
+  const step=nextStep(selected,locked,openOther&&selected&&openOther.id!==selected.id?openOther:undefined);
   const doPrimary=()=>{
     if(step.primary==='control')void takeControl();
     if(step.primary==='open')void openRound();
@@ -200,84 +352,114 @@ function App(){
     terminated:currentAttempts.filter(a=>a.status==='terminated').length,
   };
 
+  const presentManual=(state:string,payload:Record<string,unknown>={})=>
+    run(`Projector → ${state}`,()=>publish(state,payload));
+
   return (
     <div className="shell">
       <header className="top">
-        <div>
-          <small>GERiCARE LIVE</small>
-          <h1>Control</h1>
-        </div>
+        <div><small>GERiCARE LIVE</small><h1>Control</h1></div>
         <div className={'badge'+(locked?' live':'')}>{locked?'● You have control':'○ View only'}</div>
       </header>
 
       <div className="wrap">
         <div className={'status-line'+(msgKind==='err'?' err':msgKind==='ok'?' ok':'')}>{message}</div>
 
-        {/* What to do next */}
         <section className="next">
           <div className="label">Next step</div>
           <h2>{step.title}</h2>
           <p>{step.detail}</p>
           {step.blocked&&<p style={{marginTop:8,color:'#fca5a5'}}>{step.blocked}</p>}
           <div className="cta">
-            {step.primary&&(
-              <button type="button" className="btn primary" onClick={doPrimary}>{step.primaryLabel}</button>
-            )}
-            {locked&&selected&&selected.status==='open'&&(
-              <button type="button" className="btn ghost" onClick={()=>void releaseResults()}>Release early (after close preferred)</button>
-            )}
-            {locked&&selected&&selected.status==='closed'&&step.primary!=='release'&&(
-              <button type="button" className="btn ghost" onClick={()=>void releaseResults()}>Release results</button>
-            )}
+            {step.primary&&<button type="button" className="btn primary" onClick={doPrimary}>{step.primaryLabel}</button>}
           </div>
         </section>
 
-        {/* Rounds picker */}
+        {/* Projector run-of-show */}
+        <section className="section">
+          <h3>Projector show</h3>
+          <div className="actions" style={{marginBottom:10}}>
+            <label style={{fontSize:12,fontWeight:700,display:'flex',alignItems:'center',gap:6}}>
+              <input type="checkbox" checked={autoFollow} onChange={e=>setAutoFollow(e.target.checked)}/>
+              Auto-follow Open / Close / Release
+            </label>
+          </div>
+          <div className="actions" style={{marginBottom:10}}>
+            <button type="button" className={'btn'+(showOrder==='teach'?' primary':'')} onClick={()=>setShowOrder('teach')}>Teach: Q&A → scores</button>
+            <button type="button" className={'btn'+(showOrder==='compete'?' primary':'')} onClick={()=>setShowOrder('compete')}>Compete: scores → Q&A</button>
+          </div>
+          <div className="actions" style={{marginBottom:10}}>
+            <label style={{fontSize:12}}>Q&A seconds
+              <input type="number" min={5} max={60} value={qaSeconds} onChange={e=>setQaSeconds(+e.target.value||12)} style={{width:64,marginLeft:8}}/>
+            </label>
+          </div>
+
+          {playlist.length>0&&(
+            <>
+              <p className="muted" style={{marginBottom:8}}>Now: <b>{playlist[playIdx]?.label??'—'}</b> ({playIdx+1}/{playlist.length}){paused?' · paused':''}</p>
+              <div className="actions" style={{marginBottom:10}}>
+                <button type="button" className="btn" disabled={playIdx<=0} onClick={()=>void goToIndex(playIdx-1,playlist,selected,roundQs)}>◀ Back</button>
+                <button type="button" className="btn" onClick={()=>setPaused(p=>!p)}>{paused?'Resume timer':'Pause timer'}</button>
+                <button type="button" className="btn primary" disabled={playIdx>=playlist.length-1} onClick={()=>void goToIndex(playIdx+1,playlist,selected,roundQs)}>Next ▶</button>
+              </div>
+              <div className="list">
+                {playlist.map((s,i)=>(
+                  <button type="button" key={s.id} className="row" style={{width:'100%',textAlign:'left',border:0,background:i===playIdx?'#e0f2fe':'transparent',cursor:'pointer',font:'inherit'}} onClick={()=>void goToIndex(i,playlist,selected,roundQs)}>
+                    <span>{i===playIdx?'→':'·'}</span>
+                    <strong>{s.label}</strong>
+                    <span>{s.kind}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          <div className="actions" style={{marginTop:12}}>
+            <button type="button" className="btn" onClick={()=>void presentManual('WAITING',{p_title:'GERiCARE Conference Quiz'})}>Waiting</button>
+            <button type="button" className="btn" onClick={()=>void presentManual('RULES',{p_title:'How to Play'})}>Rules</button>
+            <button type="button" className="btn" onClick={()=>void presentManual('LEADERBOARD',{p_title:'Overall',p_top10:normalizeBoard(board)})}>Overall</button>
+            <button type="button" className="btn" onClick={()=>void presentManual('FINAL',{p_title:'Grand Final'})}>Final</button>
+            <button type="button" className="btn" onClick={()=>void presentManual('WINNER')}>Winner</button>
+          </div>
+          {selected&&selected.questions_locked&&(
+            <div className="actions" style={{marginTop:8}}>
+              <button type="button" className="btn" onClick={()=>void run('Start post-round show',async()=>{
+                const steps=buildPostCloseSteps(showOrder,roundQs.length||3);
+                setPlaylist(steps);setPlayIdx(0);setPaused(false);
+                await loadRoundQuestions(selected.id);
+                await goToIndex(0,steps,selected,roundQs);
+              })}>Start Q&A / scores sequence</button>
+            </div>
+          )}
+        </section>
+
         <section className="section">
           <h3>Rounds</h3>
           <div className="rounds">
-            {rounds.map(r=>{
-              const isOpen=r.status==='open';
-              const isSel=selected?.id===r.id;
-              return (
-                <button
-                  type="button"
-                  key={r.id}
-                  className={'round'+(isSel?' on':'')+(isOpen?' open-live':'')}
-                  onClick={()=>setSelected(r)}
-                >
-                  <div className="rn">R{r.round_number}</div>
-                  <div>
-                    <strong>{r.title}</strong>
-                    <div className="meta">
-                      {r.status}
-                      {r.questions_locked
-                        ?<span className="tag ok">set ready</span>
-                        :<span className="tag warn">no set</span>}
-                      {isOpen&&<span className="tag live">live now</span>}
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-            {!rounds.length&&<p className="muted">No rounds</p>}
+            {rounds.map(r=>(
+              <button type="button" key={r.id} className={'round'+(selected?.id===r.id?' on':'')+(r.status==='open'?' open-live':'')} onClick={()=>setSelected(r)}>
+                <div className="rn">R{r.round_number}</div>
+                <div>
+                  <strong>{r.title}</strong>
+                  <div className="meta">{r.status}{r.questions_locked?<span className="tag ok">set ready</span>:<span className="tag warn">no set</span>}{r.status==='open'&&<span className="tag live">live</span>}</div>
+                </div>
+              </button>
+            ))}
           </div>
-
-          {selected&&locked&&(
+          {selected&&(
             <div className="actions" style={{marginTop:12}}>
-              <button type="button" className="btn" disabled={!selected.questions_locked||!!(openOther&&openOther.id!==selected.id)||selected.status==='open'} onClick={()=>void openRound()}>Open</button>
-              <button type="button" className="btn" disabled={selected.status!=='open'} onClick={()=>void closeRound()}>Close</button>
-              <button type="button" className="btn" disabled={selected.status!=='closed'&&selected.status!=='open'} onClick={()=>void releaseResults()}>Release</button>
-            </div>
-          )}
-          {selected&&!locked&&(
-            <div className="actions" style={{marginTop:12}}>
-              <button type="button" className="btn primary" onClick={()=>void takeControl()}>Take control</button>
+              {!locked&&<button type="button" className="btn primary" onClick={()=>void takeControl()}>Take control</button>}
+              {locked&&(
+                <>
+                  <button type="button" className="btn" disabled={!selected.questions_locked||!!(openOther&&openOther.id!==selected.id)||selected.status==='open'} onClick={()=>void openRound()}>Open</button>
+                  <button type="button" className="btn" disabled={selected.status!=='open'} onClick={()=>void closeRound()}>Close</button>
+                  <button type="button" className="btn" disabled={selected.status!=='closed'&&selected.status!=='open'} onClick={()=>void releaseResults()}>Release</button>
+                </>
+              )}
             </div>
           )}
         </section>
 
-        {/* Live monitor for selected / open round */}
         <section className="section">
           <h3>This round · players</h3>
           <div className="stats">
@@ -285,91 +467,38 @@ function App(){
             <div className="stat"><b>{counts.submitted}</b><span>Submitted</span></div>
             <div className="stat"><b>{counts.terminated}</b><span>Flagged</span></div>
           </div>
-          <div className="list">
-            {currentAttempts.slice(0,8).map(a=>(
-              <div className="row" key={a.id}>
-                <span>{a.participant_id.slice(0,8)}…</span>
-                <strong>{a.status}</strong>
-                <span>{a.score} pts</span>
-              </div>
-            ))}
-            {!currentAttempts.length&&<p className="muted">No attempts yet for this round.</p>}
-          </div>
-        </section>
-
-        <section className="section">
-          <h3>Projector</h3>
-          <div className="actions">
-            <button type="button" className="btn" onClick={()=>void present('WAITING')}>Waiting</button>
-            <button type="button" className="btn" onClick={()=>void present('RULES',{p_title:'How to Play'})}>Rules</button>
-            <button type="button" className="btn" onClick={()=>void present('ROUND_TOP10')}>Round top 10</button>
-            <button type="button" className="btn" onClick={()=>void present('LEADERBOARD')}>Leaderboard</button>
-            <button type="button" className="btn" onClick={()=>void present('FINAL',{p_title:'Grand Final'})}>Final screen</button>
-            <button type="button" className="btn" onClick={()=>void present('WINNER')}>Winner</button>
-          </div>
         </section>
 
         <section className="section">
           <h3>Leaderboard snapshot</h3>
-          {board.length?
-            <div className="list">
-              {board.slice(0,10).map((b,i)=>(
-                <div className="row" key={b.participant_id??i}>
-                  <b>#{b.rank??i+1}</b>
-                  <strong>{b.display_name??b.name}</strong>
-                  <span>{b.score}</span>
-                </div>
-              ))}
-            </div>
-            :<p className="muted">Appears after you release results.</p>}
+          {board.length?board.slice(0,10).map((b,i)=>(
+            <div className="row" key={b.participant_id??i}><b>#{b.rank}</b><strong>{b.display_name??b.name}</strong><span>{b.score}</span></div>
+          )):<p className="muted">After release</p>}
         </section>
 
-        {/* Advanced folded away */}
         <details className="section">
           <summary>Grand Final & sudden death</summary>
           <div className="body">
-            <div className="actions" style={{marginBottom:12}}>
-              <button type="button" className="btn" onClick={()=>void run('Qualify finalists',()=>rpc('qualify_finalists',{p_event_id:eventId}))}>Qualify top 10</button>
-              <button type="button" className="btn" onClick={()=>void run('Start final',async()=>{await rpc('start_final',{p_event_id:eventId});await present('FINAL',{p_title:'Grand Final'})})}>Start final</button>
-              <button type="button" className="btn" onClick={()=>void run('Final board',()=>rpc('build_final_leaderboard',{p_event_id:eventId}))}>Final leaderboard</button>
-              <button type="button" className="btn danger" onClick={()=>void run('Complete event',async()=>{await rpc('complete_event',{p_event_id:eventId});await present('WINNER')})}>Complete event</button>
-            </div>
-            <p className="muted">{finalists.length} finalists loaded</p>
-            <div className="list" style={{marginBottom:12}}>
-              {finalists.slice(0,10).map(f=>(
-                <div className="row" key={f.id}>
-                  <b>#{f.rank}</b>
-                  <span>{f.participant_id.slice(0,8)}…</span>
-                  <span>{f.preliminary_score}</span>
-                </div>
-              ))}
-            </div>
-            <h3 style={{margin:'12px 0 8px',fontSize:12,textTransform:'uppercase',color:'#64748b'}}>Sudden death</h3>
             <div className="actions">
-              <input value={suddenQuestion} onChange={e=>setSuddenQuestion(e.target.value)} placeholder="Question UUID"/>
-              <button type="button" className="btn" onClick={()=>void run('Sudden death',async()=>{
-                if(!suddenQuestion.trim())throw Error('Paste question UUID');
-                await rpc('start_sudden_death',{p_event_id:eventId,p_question_id:suddenQuestion.trim()});
-                setSuddenQuestion('');
-              })}>Start</button>
-              <button type="button" className="btn" disabled={!sudden} onClick={()=>void run('Resolve SD',async()=>{
-                if(!sudden)throw Error('None active');
-                await rpc('resolve_sudden_death',{p_sudden_death_id:sudden.id});
-              })}>Resolve</button>
+              <button type="button" className="btn" onClick={()=>void run('Qualify',()=>rpc('qualify_finalists',{p_event_id:eventId}))}>Qualify</button>
+              <button type="button" className="btn" onClick={()=>void run('Start final',async()=>{await rpc('start_final',{p_event_id:eventId});await publish('FINAL',{p_title:'Grand Final'})})}>Start final</button>
+              <button type="button" className="btn" onClick={()=>void run('Final board',()=>rpc('build_final_leaderboard',{p_event_id:eventId}))}>Final board</button>
+              <button type="button" className="btn danger" onClick={()=>void run('Complete',async()=>{await rpc('complete_event',{p_event_id:eventId});await publish('WINNER')})}>Complete</button>
             </div>
-            {sudden&&<p className="muted" style={{marginTop:8}}>Active SD #{sudden.question_number}</p>}
+            <p className="muted">{finalists.length} finalists</p>
+            <div className="actions" style={{marginTop:8}}>
+              <input value={suddenQuestion} onChange={e=>setSuddenQuestion(e.target.value)} placeholder="SD question UUID"/>
+              <button type="button" className="btn" onClick={()=>void run('SD start',async()=>{if(!suddenQuestion.trim())throw Error('UUID required');await rpc('start_sudden_death',{p_event_id:eventId,p_question_id:suddenQuestion.trim()});setSuddenQuestion('')})}>Start SD</button>
+              <button type="button" className="btn" disabled={!sudden} onClick={()=>void run('SD resolve',async()=>{if(!sudden)throw Error('none');await rpc('resolve_sudden_death',{p_sudden_death_id:sudden.id})})}>Resolve</button>
+            </div>
           </div>
         </details>
 
         <details className="section">
-          <summary>Integrity alerts</summary>
+          <summary>Integrity</summary>
           <div className="body list">
-            {integrity.slice(0,15).map(x=>(
-              <div className="row" key={x.id}>
-                <span>{new Date(x.occurred_at).toLocaleTimeString()}</span>
-                <strong>{x.event}</strong>
-                <span>{x.participant_id?.slice(0,8)??'—'}</span>
-              </div>
+            {integrity.slice(0,12).map(x=>(
+              <div className="row" key={x.id}><span>{new Date(x.occurred_at).toLocaleTimeString()}</span><strong>{x.event}</strong><span>{x.participant_id?.slice(0,8)??'—'}</span></div>
             ))}
             {!integrity.length&&<p className="muted">None</p>}
           </div>
