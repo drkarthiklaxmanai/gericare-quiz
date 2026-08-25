@@ -12,6 +12,7 @@ type Participant={id:string;event_id:string;display_name:string}
 type EventInfo={id:string;name:string;status:string;registration_open:boolean}
 type Round={id:string;round_number:number;title:string;status:string;is_optional:boolean;results_released?:boolean}
 type AttemptSummary={round_id:string;status:string;score:number;result_released_at:string|null;submitted_at:string|null}
+type ReviewOpt={key:string;text:string;correct:boolean}
 type HistoryItem={
   id:string
   status:string
@@ -24,10 +25,13 @@ type HistoryItem={
     question_id:string
     stem:string
     selected_option:string|null
+    selected_option_key?:string|null
     correct_option:string
+    correct_option_key?:string
     is_correct:boolean|null
     points_awarded:number|null
     explanation:string|null
+    options?:ReviewOpt[]
   }[]
 }
 
@@ -111,9 +115,7 @@ export default function App(){
    {!history.length&&<div className="card"><p>No released results yet. After the host releases a round, the full Q&A review appears here for everyone.</p></div>}
    {history.map(h=>{
      const attempted=!!h.attempted
-     const scoreLabel=h.released
-       ? (attempted?`${h.score??0}`:'—')
-       : '…'
+     const scoreLabel=h.released?(attempted?`${h.score??0}`:'—'):'…'
      const scoreCls=h.released?(attempted?'':' skipped'):' pending'
      return (
        <div className="card historyCard" key={h.id}>
@@ -133,25 +135,41 @@ export default function App(){
              <p className="skip-note">Correct answers and explanations are shown so you can still learn from this round.</p>
            )}
            {h.released&&h.responses?.map((r,i)=>{
-             const pillCls=r.is_correct===true?'ok':r.is_correct===false?'bad':'skip'
-             const pillText=r.is_correct===true?'Correct':r.is_correct===false?'Incorrect':'Not attempted'
+             const opts=r.options??[]
+             const picked=r.selected_option_key??null
+             const bannerCls=r.is_correct===true?'ok':r.is_correct===false?'bad':'skip'
+             const bannerText=r.is_correct===true
+               ? `Correct${r.points_awarded!=null?` · ${r.points_awarded} pts`:''}`
+               : r.is_correct===false
+                 ? `Incorrect${r.points_awarded!=null?` · ${r.points_awarded} pts`:''}`
+                 : 'Not attempted'
              return (
                <div className="q-card" key={r.question_id}>
                  <div className="q-top">
                    <span className="q-num">{i+1}</span>
                    <p className="q-stem">{r.stem}</p>
                  </div>
-                 <span className={'result-pill '+pillCls}>{pillText}{r.points_awarded!=null&&attempted?` · ${r.points_awarded} pts`:''}</span>
-                 {attempted&&(
-                   <div className="ans-row yours">
-                     <span className="lab">Yours</span>
-                     <span className="val">{r.selected_option??'No answer'}</span>
+                 {opts.length>0?(
+                   <div className="rev-opts">
+                     {opts.map(o=>{
+                       const isCorrect=!!o.correct
+                       const isWrongPick=!!picked&&picked===o.key&&!isCorrect
+                       const cls=isCorrect?'correct':isWrongPick?'wrong-pick':(picked||!attempted?'':' dim')
+                       return (
+                         <div className={'rev-opt '+cls} key={o.key}>
+                           <span className="key">{o.key}</span>
+                           <span>{o.text}</span>
+                         </div>
+                       )
+                     })}
                    </div>
+                 ):(
+                   <>
+                     {attempted&&<div className="rev-banner bad">Your answer: {r.selected_option??'No answer'}</div>}
+                     <div className="rev-banner ok">Correct: {r.correct_option}</div>
+                   </>
                  )}
-                 <div className="ans-row correct-row">
-                   <span className="lab">Correct</span>
-                   <span className="val">{r.correct_option}</span>
-                 </div>
+                 <div className={'rev-banner '+bannerCls}>{bannerText}</div>
                  {r.explanation&&(
                    <div className="explain">
                      <span className="ex-label">Explanation</span>
