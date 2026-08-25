@@ -27,7 +27,7 @@ type DisplayState={
   top10?:unknown;
 };
 
-const demo:DisplayState={state:'WAITING',title:'GERiCARE Conference Quiz'};
+const demo:DisplayState={state:'WAITING',title:'GeriCare Conference Quiz'};
 
 function asArray(value:unknown):unknown[]{
   if(Array.isArray(value))return value;
@@ -203,7 +203,7 @@ function App(){
             <div className="kicker gold">Champion</div>
             <div className="hero-card">
               <h1>{view.title??'Congratulations!'}</h1>
-              <p className="sub">GERiCARE Conference Quiz</p>
+              <p className="sub">GeriCare Conference Quiz</p>
             </div>
           </div>
         );
@@ -211,7 +211,7 @@ function App(){
       default:
         return (
           <div className="stage">
-            <div className="kicker">GERiCARE</div>
+            <div className="kicker">GeriCare</div>
             <div className="hero-card">
               <h1>{view.title??'Quiz will begin shortly'}</h1>
               <p className="sub"><span className="pulse"/>Get ready on your devices</p>
@@ -223,7 +223,7 @@ function App(){
 
   return (
     <main>
-      <div className="brand">GERiCARE</div>
+      <div className="brand">GeriCare</div>
       <div className={'status'+(connected?' live':'')}>{connected?'LIVE':'RECONNECTING'}</div>
       {content()}
     </main>
