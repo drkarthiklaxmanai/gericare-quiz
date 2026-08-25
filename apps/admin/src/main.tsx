@@ -14,8 +14,6 @@ type C={id:string;name:string;slug:string};
 type O={option_key:string;option_text:string;is_correct:boolean};
 type FQ={question_id:string;canonical_order:number};
 type RQ={round_id:string;question_id:string;canonical_order:number};
-type Tab='setup'|'bank';
-type Scope='round'|'final';
 type Form={stem:string;category:string;difficulty:number;points:number;options:string[];correct:number;explanation:string};
 
 const emptyForm=():Form=>({stem:'',category:'',difficulty:3,points:10,options:['','','',''],correct:0,explanation:''});
@@ -41,28 +39,24 @@ async function rpc(n:string,a:Record<string,unknown>={}){
 }
 
 function App(){
-  const[tab,setTab]=useState<Tab>('bank');
-  const[scope,setScope]=useState<Scope>('round');
   const[eventId,setEventId]=useState(configuredEvent??'');
   const[q,setQ]=useState<Q[]>([]);
   const[rounds,setRounds]=useState<R[]>([]);
   const[cats,setCats]=useState<C[]>([]);
   const[allRQ,setAllRQ]=useState<RQ[]>([]);
-  const[roundId,setRoundId]=useState<string|null>(null);
   const[finalQ,setFinalQ]=useState<FQ[]>([]);
   const[status,setStatus]=useState('Ready');
   const[sel,setSel]=useState<Q|null>(null);
   const[selOpts,setSelOpts]=useState<O[]>([]);
   const[optsCache,setOptsCache]=useState<Record<string,O[]>>({});
   const[search,setSearch]=useState('');
-  const[reserveSearch,setReserveSearch]=useState('');
+  const[filter,setFilter]=useState<'all'|'drafts'|'reserve'>('all');
   const[modal,setModal]=useState<'create'|'edit'|null>(null);
   const[form,setForm]=useState<Form>(emptyForm());
   const[aiTopic,setAiTopic]=useState('');
   const[busy,setBusy]=useState(false);
   const[lastRemoved,setLastRemoved]=useState<{kind:'round'|'final';roundId?:string;questionId:string;stem:string}|null>(null);
-  const[bankFilter,setBankFilter]=useState<'all'|'drafts'|'reserve'>('all');
-  const[assignTo,setAssignTo]=useState<string>(''); // round id or 'final' for reserve add picker
+  const[assignTo,setAssignTo]=useState<string>('');
 
   const resolveEvent=async()=>{
     if(configuredEvent){setEventId(configuredEvent);return configuredEvent}
@@ -91,7 +85,6 @@ function App(){
       ]);
       if(a.error||c.error||d.error||rq.error)throw(a.error||c.error||d.error||rq.error);
       setQ(a.data??[]);setRounds(rlist);setCats(c.data??[]);setFinalQ(d.data??[]);setAllRQ((rq.data??[]) as RQ[]);
-      setRoundId(prev=>prev&&rlist.some(r=>r.id===prev)?prev:(rlist[0]?.id??null));
       if(!assignTo&&rlist[0])setAssignTo(rlist[0].id);
     }catch(e){setStatus(errText(e))}
   };
@@ -99,30 +92,16 @@ function App(){
   useEffect(()=>{resolveEvent().then(load).catch(e=>setStatus(errText(e)))},[]);
 
   const categoryName=(id:string|null)=>cats.find(c=>c.id===id)?.name??'Uncategorised';
-  const active=rounds.find(r=>r.id===roundId)??null;
+  const assignedIds=useMemo(()=>new Set(allRQ.map(r=>r.question_id)),[allRQ]);
+  const finalIds=useMemo(()=>new Set(finalQ.map(f=>f.question_id)),[finalQ]);
+  const drafts=useMemo(()=>q.filter(x=>x.status==='draft'),[q]);
+  const reserveList=useMemo(()=>q.filter(x=>x.status==='approved'&&!assignedIds.has(x.id)&&!finalIds.has(x.id)),[q,assignedIds,finalIds]);
+  const countFor=(rid:string)=>allRQ.filter(r=>r.round_id===rid).length;
 
   const slotsFor=(round:R)=>{
     const m=new Map(allRQ.filter(r=>r.round_id===round.id).map(r=>[r.canonical_order,r.question_id]));
     return [m.get(1)??null,m.get(2)??null,m.get(3)??null] as (string|null)[];
   };
-
-  const slots=useMemo(()=>active?slotsFor(active):[null,null,null],[active,allRQ]);
-
-  const assignedIds=useMemo(()=>new Set(allRQ.map(r=>r.question_id)),[allRQ]);
-  const finalIds=useMemo(()=>new Set(finalQ.map(f=>f.question_id)),[finalQ]);
-
-  const reserve=useMemo(()=>{
-    const s=(tab==='setup'?reserveSearch:search).toLowerCase();
-    return q.filter(x=>{
-      if(x.status!=='approved')return false;
-      if(assignedIds.has(x.id)||finalIds.has(x.id))return false;
-      if(s&&!x.stem.toLowerCase().includes(s))return false;
-      return true;
-    });
-  },[q,assignedIds,finalIds,reserveSearch,search,tab]);
-
-  const drafts=useMemo(()=>q.filter(x=>x.status==='draft'),[q]);
-  const countFor=(rid:string)=>allRQ.filter(r=>r.round_id===rid).length;
 
   const loadOpts=async(questionId:string)=>{
     if(optsCache[questionId]||!sb)return optsCache[questionId]??[];
@@ -155,30 +134,14 @@ function App(){
     await setRoundOrder(round,[...ordered,questionId]);
   };
 
-  const addToRound=async(questionId:string)=>{
-    if(!active)return;
-    try{
-      setStatus('Adding…');
-      await addToRoundId(active,questionId);
-      if(lastRemoved?.questionId===questionId)setLastRemoved(null);
-      setStatus(`Added to R${active.round_number}`);
-    }catch(e){setStatus(errText(e))}
-  };
-
   const removeFromRoundId=async(round:R,questionId:string)=>{
     const qq=q.find(x=>x.id===questionId);
     if(!window.confirm(`Move to Reserve?\n\n${qq?.stem??''}`))return;
     try{
-      const ordered=(slotsFor(round).filter(Boolean) as string[]).filter(id=>id!==questionId);
-      await setRoundOrder(round,ordered);
+      await setRoundOrder(round,(slotsFor(round).filter(Boolean) as string[]).filter(id=>id!==questionId));
       setLastRemoved({kind:'round',roundId:round.id,questionId,stem:qq?.stem??questionId});
       setStatus('Moved to Reserve');
     }catch(e){setStatus(errText(e))}
-  };
-
-  const removeFromRound=async(questionId:string)=>{
-    if(!active)return;
-    await removeFromRoundId(active,questionId);
   };
 
   const moveInRound=async(round:R,index:number,dir:-1|1)=>{
@@ -186,30 +149,7 @@ function App(){
     const j=index+dir;
     if(j<0||j>2||!ordered[index])return;
     const t=ordered[index];ordered[index]=ordered[j];ordered[j]=t;
-    try{
-      await setRoundOrder(round,ordered.filter(Boolean) as string[]);
-      setStatus('Order updated');
-    }catch(e){setStatus(errText(e))}
-  };
-
-  const move=async(index:number,dir:-1|1)=>{
-    if(!active)return;
-    await moveInRound(active,index,dir);
-  };
-
-  const undo=async()=>{
-    if(!lastRemoved)return;
-    try{
-      if(lastRemoved.kind==='final'){
-        await addFinal(lastRemoved.questionId);
-        return;
-      }
-      const r=rounds.find(x=>x.id===lastRemoved.roundId);
-      if(!r)return;
-      await addToRoundId(r,lastRemoved.questionId);
-      setLastRemoved(null);
-      setStatus('Restored');
-    }catch(e){setStatus(errText(e))}
+    try{await setRoundOrder(round,ordered.filter(Boolean) as string[]);setStatus('Order updated')}catch(e){setStatus(errText(e))}
   };
 
   const lockRound=async(round:R)=>{
@@ -218,8 +158,6 @@ function App(){
   const unlockRound=async(round:R)=>{
     try{await rpc('unlock_round_question_set',{p_round_id:round.id});setStatus(`R${round.round_number} unlocked`);await load(eventId)}catch(e){setStatus(errText(e))}
   };
-  const lock=async()=>{if(active)await lockRound(active)};
-  const unlock=async()=>{if(active)await unlockRound(active)};
 
   const addFinal=async(id:string)=>{
     try{
@@ -254,6 +192,18 @@ function App(){
   };
 
   const validateFinal=async()=>{try{await rpc('validate_final_question_set',{p_event_id:eventId});setStatus('Final OK 10/10')}catch(e){setStatus(errText(e))}};
+
+  const undo=async()=>{
+    if(!lastRemoved)return;
+    try{
+      if(lastRemoved.kind==='final'){await addFinal(lastRemoved.questionId);return}
+      const r=rounds.find(x=>x.id===lastRemoved.roundId);
+      if(!r)return;
+      await addToRoundId(r,lastRemoved.questionId);
+      setLastRemoved(null);
+      setStatus('Restored');
+    }catch(e){setStatus(errText(e))}
+  };
 
   const assignReserve=async(questionId:string)=>{
     try{
@@ -344,8 +294,8 @@ function App(){
   const matchSearch=(stem:string)=>!search.trim()||stem.toLowerCase().includes(search.toLowerCase());
 
   type CardCtx=
-    |{kind:'round';round:R;order:number;index:number;total:number}
-    |{kind:'final';order:number;index:number;total:number}
+    |{kind:'round';round:R;index:number;total:number}
+    |{kind:'final';index:number;total:number}
     |{kind:'reserve'}
     |{kind:'draft'};
 
@@ -353,7 +303,6 @@ function App(){
     const open=sel?.id===x.id;
     const opts=open?(optsCache[x.id]??selOpts):[];
     const locked=ctx.kind==='round'&&ctx.round.questions_locked;
-
     return (
       <div className="qrow">
         <button type="button" className="qrow-h" onClick={()=>toggleCard(x)}>
@@ -372,15 +321,12 @@ function App(){
               </div>
             ))}
             {x.explanation&&<p style={{fontSize:12,color:'#4b5563',margin:'8px 0 0'}}>{x.explanation}</p>}
-
             <div style={{display:'flex',gap:6,marginTop:10,flexWrap:'wrap'}}>
               <button type="button" className="btn primary" onClick={()=>openEdit(x,opts)}>Edit</button>
               <button type="button" className="btn primary" disabled={x.status==='approved'||busy} onClick={()=>approve(x)}>
                 {x.status==='approved'?'Approved':'QA & Approve'}
               </button>
             </div>
-
-            {/* Assign actions */}
             {ctx.kind==='round'&&!locked&&(
               <div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
                 <button type="button" className="btn icon" disabled={ctx.index<=0} onClick={()=>moveInRound(ctx.round,ctx.index,-1)}>↑</button>
@@ -389,7 +335,7 @@ function App(){
               </div>
             )}
             {ctx.kind==='round'&&locked&&(
-              <p style={{fontSize:12,color:'#9ca3af',margin:'8px 0 0'}}>Round locked — Unlock in section header to reorder</p>
+              <p style={{fontSize:12,color:'#9ca3af',margin:'8px 0 0'}}>Locked — use Unlock on the section header</p>
             )}
             {ctx.kind==='final'&&(
               <div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
@@ -398,7 +344,7 @@ function App(){
                 <button type="button" className="btn danger" onClick={()=>removeFinal(x.id)}>Remove to Reserve</button>
               </div>
             )}
-            {ctx.kind==='reserve'&&x.status==='approved'&&(
+            {ctx.kind==='reserve'&&(
               <div style={{marginTop:10}}>
                 <label style={{fontSize:11,fontWeight:700,color:'#6b7280'}}>Add to</label>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:6}}>
@@ -423,206 +369,123 @@ function App(){
   return (
     <div className="app">
       <header className="topbar">
-        <div><small>GERiCARE</small><h1>Question setup</h1></div>
+        <div><small>GERiCARE</small><h1>Question bank</h1></div>
         <div className="pill">{status}</div>
       </header>
 
-      <nav className="tabs">
-        <button type="button" className={'tab'+(tab==='setup'?' on':'')} onClick={()=>setTab('setup')}>Assign</button>
-        <button type="button" className={'tab'+(tab==='bank'?' on':'')} onClick={()=>setTab('bank')}>Bank</button>
-      </nav>
-
       <div className="wrap"><div className="card">
-        {tab==='setup'&&(
-          <>
-            <div className="chips">
-              {rounds.map(r=>(
-                <button key={r.id} type="button" className={'chip'+(scope==='round'&&roundId===r.id?' sel':'')} onClick={()=>{setScope('round');setRoundId(r.id);setLastRemoved(null)}}>
-                  R{r.round_number}<span className="sub">{countFor(r.id)}/3{r.questions_locked?' · lock':''}</span>
-                </button>
-              ))}
-              <button type="button" className={'chip'+(scope==='final'?' sel':'')} onClick={()=>{setScope('final');setLastRemoved(null)}}>
-                Final<span className="sub">{finalQ.length}/10</span>
-              </button>
-            </div>
-            {scope==='round'&&active&&(
-              <>
-                <div className="row-head">
-                  <div><h2>Round {active.round_number} — {active.title}</h2><p>{active.questions_locked?'Locked':'Unlocked'} · {slots.filter(Boolean).length}/3</p></div>
-                  <div style={{display:'flex',gap:6}}>
-                    {!active.questions_locked&&<button type="button" className="btn primary" disabled={slots.filter(Boolean).length!==3} onClick={lock}>Lock</button>}
-                    {active.questions_locked&&<button type="button" className="btn danger" disabled={active.status!=='draft'} onClick={unlock}>Unlock</button>}
-                  </div>
-                </div>
-                {lastRemoved&&lastRemoved.kind==='round'&&lastRemoved.roundId===active.id&&(
-                  <div className="undo"><p><b>Removed:</b> {lastRemoved.stem}</p><button type="button" className="btn primary" disabled={active.questions_locked||slots.filter(Boolean).length>=3} onClick={undo}>Undo</button></div>
-                )}
-                {[0,1,2].map(i=>{
-                  const id=slots[i];const qq=id?q.find(x=>x.id===id):null;
-                  return (
-                    <div key={i} className={'slot'+(qq?' filled':' empty')}>
-                      <div className={'num'+(qq?'':' muted')}>{i+1}</div>
-                      <div>{qq?<strong>{qq.stem}</strong>:<span style={{color:'#9ca3af',fontSize:13}}>Empty</span>}</div>
-                      {qq&&!active.questions_locked&&(
-                        <div className="slot-actions">
-                          <button type="button" className="btn icon" disabled={i===0} onClick={()=>move(i,-1)}>↑</button>
-                          <button type="button" className="btn icon" disabled={i===2||!slots[i+1]} onClick={()=>move(i,1)}>↓</button>
-                          <button type="button" className="btn icon danger" onClick={()=>removeFromRound(qq.id)}>✕</button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-                <div className="sec">
-                  <h3>Reserve</h3>
-                  <input className="search" placeholder="Search reserve…" value={reserveSearch} onChange={e=>setReserveSearch(e.target.value)}/>
-                  {reserve.map(x=>(
-                    <div className="reserve" key={x.id}>
-                      <strong>{x.stem}</strong>
-                      <div className="actions"><button type="button" className="btn primary" disabled={active.questions_locked||slots.filter(Boolean).length>=3} onClick={()=>addToRound(x.id)}>Add to R{active.round_number}</button></div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-            {scope==='final'&&(
-              <>
-                <div className="row-head">
-                  <div><h2>Grand Final</h2><p>{finalQ.length}/10</p></div>
-                  <button type="button" className="btn primary" disabled={finalQ.length!==10} onClick={validateFinal}>Validate</button>
-                </div>
-                {lastRemoved&&lastRemoved.kind==='final'&&(
-                  <div className="undo"><p><b>Removed:</b> {lastRemoved.stem}</p><button type="button" className="btn primary" disabled={finalQ.length>=10} onClick={undo}>Undo</button></div>
-                )}
-                {finalQ.map((f,i)=>{
-                  const qq=q.find(x=>x.id===f.question_id);
-                  return (
-                    <div className="slot filled" key={f.question_id}>
-                      <div className="num">{f.canonical_order}</div>
-                      <div><strong>{qq?.stem??f.question_id}</strong></div>
-                      <div className="slot-actions">
-                        <button type="button" className="btn icon" disabled={i===0} onClick={()=>moveFinal(i,-1)}>↑</button>
-                        <button type="button" className="btn icon" disabled={i===finalQ.length-1} onClick={()=>moveFinal(i,1)}>↓</button>
-                        <button type="button" className="btn icon danger" onClick={()=>removeFinal(f.question_id)}>✕</button>
-                      </div>
-                    </div>
-                  );
-                })}
-                <div className="sec">
-                  <h3>Reserve</h3>
-                  {reserve.map(x=>(
-                    <div className="reserve" key={x.id}>
-                      <strong>{x.stem}</strong>
-                      <div className="actions"><button type="button" className="btn primary" disabled={finalQ.length>=10} onClick={()=>addFinal(x.id)}>Add to Final</button></div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </>
+        <input className="search" placeholder="Search questions…" value={search} onChange={e=>setSearch(e.target.value)}/>
+        <div className="filters">
+          <button type="button" className={'btn'+(filter==='all'?' primary':'')} onClick={()=>setFilter('all')}>All sections</button>
+          <button type="button" className={'btn'+(filter==='drafts'?' primary':'')} onClick={()=>setFilter('drafts')}>Drafts ({drafts.length})</button>
+          <button type="button" className={'btn'+(filter==='reserve'?' primary':'')} onClick={()=>setFilter('reserve')}>Reserve ({reserveList.length})</button>
+        </div>
+
+        {lastRemoved&&(
+          <div className="undo">
+            <p><b>Removed:</b> {lastRemoved.stem}</p>
+            <button type="button" className="btn primary" onClick={undo}>Undo</button>
+          </div>
         )}
 
-        {tab==='bank'&&(
-          <>
-            <input className="search" placeholder="Search…" value={search} onChange={e=>setSearch(e.target.value)}/>
-            <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
-              <button type="button" className={'btn'+(bankFilter==='all'?' primary':'')} onClick={()=>setBankFilter('all')}>By round</button>
-              <button type="button" className={'btn'+(bankFilter==='drafts'?' primary':'')} onClick={()=>setBankFilter('drafts')}>Drafts ({drafts.length})</button>
-              <button type="button" className={'btn'+(bankFilter==='reserve'?' primary':'')} onClick={()=>setBankFilter('reserve')}>Reserve ({q.filter(x=>x.status==='approved'&&!assignedIds.has(x.id)&&!finalIds.has(x.id)).length})</button>
+        {(filter==='all'||filter==='drafts')&&drafts.filter(x=>matchSearch(x.stem)).length>0&&(
+          <div className="section">
+            <div className="section-head">
+              <div>
+                <h3>Drafts</h3>
+                <p>{drafts.length} need approve</p>
+              </div>
             </div>
+            {drafts.filter(x=>matchSearch(x.stem)).map(x=>(
+              <QuestionCard key={x.id} x={x} badge="needs approve" ctx={{kind:'draft'}}/>
+            ))}
+          </div>
+        )}
 
-            {lastRemoved&&(
-              <div className="undo">
-                <p><b>Removed:</b> {lastRemoved.stem}</p>
-                <button type="button" className="btn primary" onClick={undo}>Undo</button>
-              </div>
-            )}
-
-            {(bankFilter==='all'||bankFilter==='drafts')&&drafts.filter(x=>matchSearch(x.stem)).length>0&&(
-              <div style={{marginBottom:16}}>
-                <h3 style={{margin:'0 0 8px',fontSize:13,textTransform:'uppercase',color:'#6b7280'}}>Drafts</h3>
-                {drafts.filter(x=>matchSearch(x.stem)).map(x=><QuestionCard key={x.id} x={x} badge="needs approve" ctx={{kind:'draft'}}/>)}
-              </div>
-            )}
-
-            {bankFilter==='all'&&rounds.map(r=>{
-              const rows=allRQ.filter(row=>row.round_id===r.id).sort((a,b)=>a.canonical_order-b.canonical_order);
-              if(search&&!rows.some(row=>{const x=q.find(qq=>qq.id===row.question_id);return x&&matchSearch(x.stem)}))return null;
-              return (
-                <div key={r.id} style={{marginBottom:18}}>
-                  <div className="row-head" style={{marginBottom:8}}>
-                    <div>
-                      <h3 style={{margin:0,fontSize:14}}>Round {r.round_number} — {r.title}</h3>
-                      <p style={{margin:'4px 0 0',fontSize:12,color:'#6b7280'}}>{rows.length}/3 · {r.questions_locked?'Locked':r.status}</p>
-                    </div>
-                    <div style={{display:'flex',gap:6}}>
-                      {!r.questions_locked&&(
-                        <button type="button" className="btn primary" disabled={rows.length!==3} onClick={()=>lockRound(r)}>Lock</button>
-                      )}
-                      {r.questions_locked&&(
-                        <button type="button" className="btn danger" disabled={r.status!=='draft'} onClick={()=>unlockRound(r)}>Unlock</button>
-                      )}
-                    </div>
-                  </div>
-                  {!rows.length&&<div className="empty" style={{padding:10}}>No questions — add from Reserve below</div>}
-                  {rows.map((row,index)=>{
-                    const x=q.find(qq=>qq.id===row.question_id);
-                    if(!x||!matchSearch(x.stem))return null;
-                    return (
-                      <QuestionCard
-                        key={x.id}
-                        x={x}
-                        badge={`#${row.canonical_order}`}
-                        ctx={{kind:'round',round:r,order:row.canonical_order,index,total:rows.length}}
-                      />
-                    );
-                  })}
+        {filter==='all'&&rounds.map(r=>{
+          const rows=allRQ.filter(row=>row.round_id===r.id).sort((a,b)=>a.canonical_order-b.canonical_order);
+          if(search&&!rows.some(row=>{const x=q.find(qq=>qq.id===row.question_id);return x&&matchSearch(x.stem)}))return null;
+          return (
+            <div className="section" key={r.id}>
+              <div className="section-head">
+                <div>
+                  <h3>Round {r.round_number} — {r.title}</h3>
+                  <p>
+                    {rows.length}/3 · {r.questions_locked?'Locked':r.status}
+                    {r.questions_locked&&<> · <span className="badge lock">locked</span></>}
+                  </p>
                 </div>
+                <div className="actions">
+                  {!r.questions_locked&&(
+                    <button type="button" className="btn primary" disabled={rows.length!==3} onClick={()=>lockRound(r)}>Lock</button>
+                  )}
+                  {r.questions_locked&&(
+                    <button type="button" className="btn danger" disabled={r.status!=='draft'} onClick={()=>unlockRound(r)}>Unlock</button>
+                  )}
+                </div>
+              </div>
+              {!rows.length&&<div className="empty" style={{padding:10}}>Empty — add from Reserve</div>}
+              {rows.map((row,index)=>{
+                const x=q.find(qq=>qq.id===row.question_id);
+                if(!x||!matchSearch(x.stem))return null;
+                return (
+                  <QuestionCard
+                    key={x.id}
+                    x={x}
+                    badge={`#${row.canonical_order}`}
+                    ctx={{kind:'round',round:r,index,total:rows.length}}
+                  />
+                );
+              })}
+            </div>
+          );
+        })}
+
+        {filter==='all'&&(
+          <div className="section">
+            <div className="section-head">
+              <div>
+                <h3>Grand Final</h3>
+                <p>{finalQ.length}/10</p>
+              </div>
+              <div className="actions">
+                <button type="button" className="btn primary" disabled={finalQ.length!==10} onClick={validateFinal}>Validate</button>
+              </div>
+            </div>
+            {!finalQ.length&&<div className="empty" style={{padding:10}}>None yet</div>}
+            {finalQ.map((f,index)=>{
+              const x=q.find(qq=>qq.id===f.question_id);
+              if(!x||!matchSearch(x.stem))return null;
+              return (
+                <QuestionCard
+                  key={x.id}
+                  x={x}
+                  badge={`#${f.canonical_order}`}
+                  ctx={{kind:'final',index,total:finalQ.length}}
+                />
               );
             })}
+          </div>
+        )}
 
-            {bankFilter==='all'&&(
-              <div style={{marginBottom:18}}>
-                <div className="row-head" style={{marginBottom:8}}>
-                  <div>
-                    <h3 style={{margin:0,fontSize:14}}>Grand Final</h3>
-                    <p style={{margin:'4px 0 0',fontSize:12,color:'#6b7280'}}>{finalQ.length}/10</p>
-                  </div>
-                  <button type="button" className="btn primary" disabled={finalQ.length!==10} onClick={validateFinal}>Validate</button>
-                </div>
-                {finalQ.map((f,index)=>{
-                  const x=q.find(qq=>qq.id===f.question_id);
-                  if(!x||!matchSearch(x.stem))return null;
-                  return (
-                    <QuestionCard
-                      key={x.id}
-                      x={x}
-                      badge={`#${f.canonical_order}`}
-                      ctx={{kind:'final',order:f.canonical_order,index,total:finalQ.length}}
-                    />
-                  );
-                })}
-                {!finalQ.length&&<div className="empty" style={{padding:10}}>None yet</div>}
-              </div>
-            )}
-
-            {(bankFilter==='all'||bankFilter==='reserve')&&(
+        {(filter==='all'||filter==='reserve')&&(
+          <div className="section">
+            <div className="section-head">
               <div>
-                <h3 style={{margin:'0 0 8px',fontSize:14}}>Reserve · free approved</h3>
-                <p className="hint" style={{marginBottom:10}}>Open a card → choose R1–R6 or Final → Add</p>
-                {q.filter(x=>x.status==='approved'&&!assignedIds.has(x.id)&&!finalIds.has(x.id)&&matchSearch(x.stem)).map(x=>(
-                  <QuestionCard key={x.id} x={x} badge="free" ctx={{kind:'reserve'}}/>
-                ))}
-                {!q.filter(x=>x.status==='approved'&&!assignedIds.has(x.id)&&!finalIds.has(x.id)&&matchSearch(x.stem)).length&&(
-                  <div className="empty">No free questions</div>
-                )}
+                <h3>Reserve</h3>
+                <p>{reserveList.length} free approved</p>
               </div>
-            )}
-          </>
+            </div>
+            <p className="hint">Open a card → choose round or Final → Add</p>
+            {reserveList.filter(x=>matchSearch(x.stem)).map(x=>(
+              <QuestionCard key={x.id} x={x} badge="free" ctx={{kind:'reserve'}}/>
+            ))}
+            {!reserveList.filter(x=>matchSearch(x.stem)).length&&<div className="empty">No free questions</div>}
+          </div>
         )}
       </div></div>
 
-      <button type="button" className="fab" onClick={openCreate}>+</button>
+      <button type="button" className="fab" onClick={openCreate} aria-label="New question">+</button>
 
       {modal&&(
         <div className="overlay" onClick={e=>{if(e.target===e.currentTarget)setModal(null)}}>
