@@ -1,7 +1,7 @@
-import React,{useEffect,useMemo,useState}from'react';
-import{createRoot}from'react-dom/client';
-import{createClient}from'@supabase/supabase-js';
-import'./styles.css';
+import React,{useEffect,useMemo,useState} from 'react';
+import {createRoot} from 'react-dom/client';
+import {createClient} from '@supabase/supabase-js';
+import './styles.css';
 
 const url=import.meta.env.VITE_SUPABASE_URL as string|undefined;
 const key=import.meta.env.VITE_SUPABASE_ANON_KEY as string|undefined;
@@ -13,8 +13,10 @@ type R={id:string;event_id:string;round_number:number;title:string;status:string
 type C={id:string;name:string;slug:string};
 type O={option_key:string;option_text:string;is_correct:boolean};
 type FQ={question_id:string;canonical_order:number};
+type Tab='bank'|'rounds'|'final';
+type Form={stem:string;category:string;difficulty:number;points:number;options:string[];correct:number;explanation:string};
 
-const blank=()=>({stem:'',category:'',difficulty:3,points:10,options:['','','',''],correct:0,explanation:'',references:[] as string[]});
+const emptyForm=():Form=>({stem:'',category:'',difficulty:3,points:10,options:['','','',''],correct:0,explanation:''});
 const slug=(x:string)=>x.toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
 
 function errText(e:unknown):string{
@@ -30,13 +32,14 @@ function errText(e:unknown):string{
 }
 
 async function rpc(n:string,a:Record<string,unknown>={}){
-  if(!sb)throw Error('Supabase environment not configured');
+  if(!sb)throw Error('Supabase not configured');
   const{data,error}=await sb.rpc(n,a);
   if(error)throw error;
   return data;
 }
 
 function App(){
+  const[tab,setTab]=useState<Tab>('bank');
   const[eventId,setEventId]=useState(configuredEvent??'');
   const[q,setQ]=useState<Q[]>([]);
   const[rounds,setRounds]=useState<R[]>([]);
@@ -44,21 +47,19 @@ function App(){
   const[sel,setSel]=useState<Q|null>(null);
   const[selOpts,setSelOpts]=useState<O[]>([]);
   const[search,setSearch]=useState('');
+  const[filter,setFilter]=useState<'all'|'draft'|'approved'>('all');
   const[selectedRound,setSelectedRound]=useState<R|null>(null);
   const[assigned,setAssigned]=useState<{question_id:string;canonical_order:number}[]>([]);
   const[finalQ,setFinalQ]=useState<FQ[]>([]);
   const[status,setStatus]=useState('Ready');
-  const[draft,setDraft]=useState(blank());
+  const[modal,setModal]=useState<'create'|'edit'|null>(null);
+  const[form,setForm]=useState<Form>(emptyForm());
   const[aiTopic,setAiTopic]=useState('');
-  const[aiBusy,setAiBusy]=useState(false);
-  const[mediaBusy,setMediaBusy]=useState(false);
-  const[editMode,setEditMode]=useState(false);
-  const[edit,setEdit]=useState({stem:'',category:'',difficulty:3,points:10,options:['','','',''],correct:0,explanation:''});
-  const[saveBusy,setSaveBusy]=useState(false);
+  const[busy,setBusy]=useState(false);
 
   const resolveEvent=async()=>{
     if(configuredEvent){setEventId(configuredEvent);return configuredEvent}
-    if(!sb)return'';
+    if(!sb)return '';
     const{data,error}=await sb.from('events').select('id').limit(1).maybeSingle();
     if(error)throw error;
     if(!data)throw Error('No accessible event');
@@ -88,27 +89,47 @@ function App(){
   useEffect(()=>{resolveEvent().then(load).catch(e=>setStatus(errText(e)))},[]);
 
   const categoryName=(id:string|null)=>cats.find(c=>c.id===id)?.name??'Uncategorised';
-  const filtered=useMemo(()=>q.filter(x=>(x.stem+' '+categoryName(x.category_id)).toLowerCase().includes(search.toLowerCase())),[q,cats,search]);
+
+  const reservedIds=useMemo(()=>{
+    // Questions already in any round or final — for pickers we still allow filtering
+    return new Set<string>();
+  },[]);
+
+  const filtered=useMemo(()=>{
+    return q.filter(x=>{
+      if(filter!=='all'&&x.status!==filter)return false;
+      const hay=(x.stem+' '+categoryName(x.category_id)).toLowerCase();
+      return hay.includes(search.toLowerCase());
+    });
+  },[q,cats,search,filter]);
 
   const loadQuestion=async(x:Q)=>{
     setSel(x);
-    setEditMode(false);
     if(!sb)return;
     const{data,error}=await sb.from('question_options').select('option_key,option_text,is_correct').eq('question_id',x.id).order('option_key');
     if(error){setStatus(errText(error));setSelOpts([]);return}
-    const opts=data??[];
-    setSelOpts(opts);
+    setSelOpts(data??[]);
+  };
+
+  const openEdit=(x:Q,opts:O[])=>{
     const ordered=['A','B','C','D'].map(k=>opts.find(o=>o.option_key===k)?.option_text??'');
     const correct=Math.max(0,opts.findIndex(o=>o.is_correct));
-    setEdit({
+    setForm({
       stem:x.stem,
       category:categoryName(x.category_id)==='Uncategorised'?'':categoryName(x.category_id),
       difficulty:x.difficulty,
       points:x.points,
-      options:ordered.length===4?ordered:[...ordered,''].slice(0,4),
+      options:ordered.length===4?ordered:[ordered[0]||'',ordered[1]||'',ordered[2]||'',ordered[3]||''],
       correct:correct>=0?correct:0,
       explanation:x.explanation??'',
     });
+    setModal('edit');
+  };
+
+  const openCreate=()=>{
+    setForm(emptyForm());
+    setAiTopic('');
+    setModal('create');
   };
 
   const ensureCategory=async(name:string)=>{
@@ -121,87 +142,88 @@ function App(){
     return data.id;
   };
 
-  const save=async()=>{
+  const saveCreate=async()=>{
     try{
       if(!sb||!eventId)throw Error('Event not configured');
-      if(!draft.stem.trim()||draft.options.some(x=>!x.trim()))throw Error('Stem and all four options are required');
+      if(!form.stem.trim()||form.options.some(x=>!x.trim()))throw Error('Stem and all four options are required');
+      setBusy(true);
       setStatus('Saving draft…');
-      const category_id=await ensureCategory(draft.category);
+      const category_id=await ensureCategory(form.category);
       const{data:user}=await sb.auth.getUser();
       const{data:x,error}=await sb.from('questions').insert({
-        event_id:eventId,category_id,stem:draft.stem,status:'draft',difficulty:draft.difficulty,points:draft.points,
-        explanation:draft.explanation||null,reference_text:draft.references.join('\n')||null,
-        created_by:user.user?.id??null,ai_metadata:aiTopic?{generated:true,topic:aiTopic}:{},
+        event_id:eventId,category_id,stem:form.stem.trim(),status:'draft',
+        difficulty:form.difficulty,points:form.points,
+        explanation:form.explanation.trim()||null,
+        created_by:user.user?.id??null,
+        ai_metadata:aiTopic?{generated:true,topic:aiTopic}:{},
       }).select('id').single();
       if(error)throw error;
       const{error:oe}=await sb.from('question_options').insert(
-        draft.options.map((option_text,i)=>({question_id:x.id,option_key:String.fromCharCode(65+i),option_text,is_correct:i===draft.correct}))
+        form.options.map((option_text,i)=>({question_id:x.id,option_key:String.fromCharCode(65+i),option_text:option_text.trim(),is_correct:i===form.correct}))
       );
       if(oe)throw oe;
-      setDraft(blank());
-      setAiTopic('');
-      setStatus('Draft saved for human review');
+      setModal(null);
+      setStatus('Draft saved');
       await load(eventId);
     }catch(e){setStatus(errText(e))}
+    finally{setBusy(false)}
   };
 
   const saveEdit=async()=>{
     if(!sel||!sb)return;
     try{
-      if(!edit.stem.trim()||edit.options.some(x=>!x.trim()))throw Error('Stem and all four options are required');
-      setSaveBusy(true);
+      if(!form.stem.trim()||form.options.some(x=>!x.trim()))throw Error('Stem and all four options are required');
+      setBusy(true);
       setStatus('Saving changes…');
-      const category_id=await ensureCategory(edit.category);
+      const category_id=await ensureCategory(form.category);
       const{error}=await sb.from('questions').update({
-        stem:edit.stem.trim(),
-        category_id,
-        difficulty:edit.difficulty,
-        points:edit.points,
-        explanation:edit.explanation.trim()||null,
+        stem:form.stem.trim(),category_id,difficulty:form.difficulty,points:form.points,
+        explanation:form.explanation.trim()||null,
       }).eq('id',sel.id);
       if(error)throw error;
-
-      // Replace options (delete + insert keeps keys A–D consistent)
       const{error:de}=await sb.from('question_options').delete().eq('question_id',sel.id);
       if(de)throw de;
       const{error:oe}=await sb.from('question_options').insert(
-        edit.options.map((option_text,i)=>({
-          question_id:sel.id,
-          option_key:String.fromCharCode(65+i),
-          option_text:option_text.trim(),
-          is_correct:i===edit.correct,
-        }))
+        form.options.map((option_text,i)=>({question_id:sel.id,option_key:String.fromCharCode(65+i),option_text:option_text.trim(),is_correct:i===form.correct}))
       );
       if(oe)throw oe;
-
+      setModal(null);
       setStatus('Question updated');
-      setEditMode(false);
       await load(eventId);
-      const updated={...sel,stem:edit.stem.trim(),category_id,difficulty:edit.difficulty,points:edit.points,explanation:edit.explanation.trim()||null};
+      const updated={...sel,stem:form.stem.trim(),category_id,difficulty:form.difficulty,points:form.points,explanation:form.explanation.trim()||null};
       await loadQuestion(updated);
     }catch(e){setStatus(errText(e))}
-    finally{setSaveBusy(false)}
+    finally{setBusy(false)}
   };
 
   const generate=async()=>{
     try{
       if(!sb||!eventId)throw Error('Event not configured');
       if(!aiTopic.trim())throw Error('Enter a topic');
-      setAiBusy(true);
+      setBusy(true);
       setStatus('Generating with AI…');
-      const{data,error}=await sb.functions.invoke('question-ai',{body:{action:'generate',event_id:eventId,topic:aiTopic,difficulty:draft.difficulty,category:draft.category||undefined}});
+      const{data,error}=await sb.functions.invoke('question-ai',{body:{action:'generate',event_id:eventId,topic:aiTopic,difficulty:form.difficulty,category:form.category||undefined}});
       if(error)throw error;
       if(data?.error)throw Error(data.message||data.detail||data.error);
       const d=data.draft;
-      setDraft({stem:d.stem,category:d.category??draft.category,difficulty:d.difficulty,points:10,options:d.options,correct:d.correct_index,explanation:d.explanation,references:d.references??[]});
-      setStatus('AI draft generated — review before saving');
+      setForm({
+        stem:d.stem,
+        category:d.category??form.category,
+        difficulty:d.difficulty??form.difficulty,
+        points:10,
+        options:Array.isArray(d.options)?d.options:form.options,
+        correct:typeof d.correct_index==='number'?d.correct_index:0,
+        explanation:d.explanation??'',
+      });
+      setStatus('AI draft ready — review before saving');
     }catch(e){setStatus(errText(e))}
-    finally{setAiBusy(false)}
+    finally{setBusy(false)}
   };
 
   const approve=async()=>{
     if(!sel||!sb)return;
     try{
+      setBusy(true);
       setStatus('Running QA…');
       const correct=selOpts.findIndex(o=>o.is_correct);
       const{data:qa,error:qe}=await sb.functions.invoke('question-ai',{body:{
@@ -217,24 +239,7 @@ function App(){
       await load(eventId);
       setSel({...sel,status:'approved'});
     }catch(e){setStatus(errText(e))}
-  };
-
-  const uploadMedia=async(file:File)=>{
-    if(!sel||!sb||!eventId)return;
-    try{
-      setMediaBusy(true);
-      setStatus('Uploading media…');
-      const type=file.type.startsWith('image/')?'image':file.type.startsWith('video/')?'video':file.type.startsWith('audio/')?'audio':null;
-      if(!type)throw Error('Unsupported media type');
-      const safe=file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
-      const path=`${eventId}/${sel.id}/${Date.now()}-${safe}`;
-      const{error:ue}=await sb.storage.from('question-media').upload(path,file,{upsert:false,contentType:file.type});
-      if(ue)throw ue;
-      const{error:me}=await sb.from('question_media').insert({question_id:sel.id,media_type:type,storage_path:path,mime_type:file.type,metadata:{size:file.size},sort_order:0});
-      if(me)throw me;
-      setStatus('Media uploaded securely');
-    }catch(e){setStatus(errText(e))}
-    finally{setMediaBusy(false)}
+    finally{setBusy(false)}
   };
 
   const loadAssigned=async(r:R)=>{
@@ -245,23 +250,23 @@ function App(){
     else setAssigned(data??[]);
   };
 
-  const assign=async(id:string)=>{
+  const assign=async(questionId:string)=>{
     if(!selectedRound)return;
     try{
-      if(selectedRound.questions_locked)throw Error('Round question set is locked');
+      if(selectedRound.questions_locked)throw Error('Unlock the round first');
       if(assigned.length>=3)throw Error('Round already has 3 questions');
       setStatus('Assigning…');
-      await rpc('assign_question_to_round',{p_round_id:selectedRound.id,p_question_id:id,p_canonical_order:assigned.length+1});
+      await rpc('assign_question_to_round',{p_round_id:selectedRound.id,p_question_id:questionId,p_canonical_order:assigned.length+1});
       await loadAssigned(selectedRound);
       setStatus('Question assigned');
     }catch(e){setStatus(errText(e))}
   };
 
-  const remove=async(id:string)=>{
+  const remove=async(questionId:string)=>{
     if(!selectedRound)return;
     try{
       setStatus('Removing…');
-      await rpc('remove_question_from_round',{p_round_id:selectedRound.id,p_question_id:id});
+      await rpc('remove_question_from_round',{p_round_id:selectedRound.id,p_question_id:questionId});
       await loadAssigned(selectedRound);
       setStatus('Removed');
     }catch(e){setStatus(errText(e))}
@@ -273,7 +278,18 @@ function App(){
       setStatus('Locking…');
       await rpc('lock_round_question_set',{p_round_id:selectedRound.id});
       setSelectedRound({...selectedRound,questions_locked:true});
-      setStatus('3-question set locked');
+      setStatus('Question set locked');
+      await load(eventId);
+    }catch(e){setStatus(errText(e))}
+  };
+
+  const unlock=async()=>{
+    if(!selectedRound)return;
+    try{
+      setStatus('Unlocking…');
+      await rpc('unlock_round_question_set',{p_round_id:selectedRound.id});
+      setSelectedRound({...selectedRound,questions_locked:false});
+      setStatus('Question set unlocked — you can reorganise');
       await load(eventId);
     }catch(e){setStatus(errText(e))}
   };
@@ -300,175 +316,260 @@ function App(){
   const validateFinal=async()=>{
     try{
       await rpc('validate_final_question_set',{p_event_id:eventId});
-      setStatus('Grand Final question set is valid: 10/10');
+      setStatus('Grand Final valid: 10/10');
     }catch(e){setStatus(errText(e))}
   };
 
+  const approvedFree=useMemo(()=>{
+    const used=new Set(assigned.map(a=>a.question_id));
+    // Also exclude questions in other rounds if we can — load all round_questions would be better; approximate via assigned only for current
+    return q.filter(x=>x.status==='approved'&&!used.has(x.id));
+  },[q,assigned]);
+
+  const formFields=(
+    <>
+      <label>Question stem</label>
+      <textarea value={form.stem} onChange={e=>setForm({...form,stem:e.target.value})} placeholder="Question text"/>
+      <div className="row2">
+        <div>
+          <label>Category</label>
+          <input value={form.category} onChange={e=>setForm({...form,category:e.target.value})} placeholder="e.g. Geriatrics"/>
+        </div>
+        <div>
+          <label>Difficulty (1–5)</label>
+          <input type="number" min={1} max={5} value={form.difficulty} onChange={e=>setForm({...form,difficulty:+e.target.value})}/>
+        </div>
+      </div>
+      <label>Options (select correct)</label>
+      <div className="opts">
+        {form.options.map((o,i)=>(
+          <div className="option" key={i}>
+            <input type="radio" name="correct" checked={form.correct===i} onChange={()=>setForm({...form,correct:i})}/>
+            <input value={o} placeholder={`Option ${String.fromCharCode(65+i)}`} onChange={e=>{const z=[...form.options];z[i]=e.target.value;setForm({...form,options:z})}}/>
+          </div>
+        ))}
+      </div>
+      <label>Explanation</label>
+      <textarea value={form.explanation} onChange={e=>setForm({...form,explanation:e.target.value})} placeholder="Optional explanation"/>
+    </>
+  );
+
   return (
     <div className="app">
-      <header>
-        <div><small>GERiCARE • QUESTION MANAGEMENT</small><h1>Question Editor</h1></div>
-        <span>{status}</span>
+      <header className="topbar">
+        <div>
+          <small>GERiCARE • ADMIN</small>
+          <h1>Question Editor</h1>
+        </div>
+        <div className="status-pill" title={status}>{status}</div>
       </header>
-      <main>
-        <aside>
-          <div className="bar">
-            <h3>Question Bank</h3>
-            <input placeholder="Search questions…" value={search} onChange={e=>setSearch(e.target.value)}/>
-          </div>
-          {filtered.map(x=>(
-            <button className={'q '+(sel?.id===x.id?'sel':'')} key={x.id} onClick={()=>loadQuestion(x)}>
-              <b>{x.status}</b>
-              <strong>{x.stem}</strong>
-              <small>{categoryName(x.category_id)} · D{x.difficulty} · {x.points} pts</small>
-            </button>
-          ))}
-        </aside>
-        <section>
-          <div className="card">
-            <h2>AI Draft Generator</h2>
-            <div className="fields">
-              <input placeholder="Topic / learning objective" value={aiTopic} onChange={e=>setAiTopic(e.target.value)}/>
-              <input placeholder="Category" value={draft.category} onChange={e=>setDraft({...draft,category:e.target.value})}/>
-              <label>Difficulty <input type="number" min={1} max={5} value={draft.difficulty} onChange={e=>setDraft({...draft,difficulty:+e.target.value})}/></label>
-            </div>
-            <button className="primary" disabled={aiBusy} onClick={generate}>{aiBusy?'Generating…':'Generate with AI'}</button>
-          </div>
 
-          <div className="card">
-            <h2>{sel?(editMode?'Edit Question':'Review Question'):'Create / Edit Draft'}</h2>
+      <nav className="tabs">
+        <button className={'tab'+(tab==='bank'?' on':'')} onClick={()=>setTab('bank')}>Question Bank</button>
+        <button className={'tab'+(tab==='rounds'?' on':'')} onClick={()=>setTab('rounds')}>Rounds</button>
+        <button className={'tab'+(tab==='final'?' on':'')} onClick={()=>setTab('final')}>Grand Final</button>
+      </nav>
 
-            {sel && editMode && (
-              <>
-                <textarea placeholder="Question stem" value={edit.stem} onChange={e=>setEdit({...edit,stem:e.target.value})}/>
-                <div className="fields">
-                  <input placeholder="Category" value={edit.category} onChange={e=>setEdit({...edit,category:e.target.value})}/>
-                  <label>Difficulty <input type="number" min={1} max={5} value={edit.difficulty} onChange={e=>setEdit({...edit,difficulty:+e.target.value})}/></label>
-                  <label>Points <input type="number" min={1} value={edit.points} onChange={e=>setEdit({...edit,points:+e.target.value})}/></label>
+      <div className="panel">
+        <div className="sheet">
+          {tab==='bank'&&(
+            <div className="bank-grid">
+              <div>
+                <input className="search" placeholder="Search questions…" value={search} onChange={e=>setSearch(e.target.value)}/>
+                <div className="filters">
+                  <button className={'chip'+(filter==='all'?' on':'')} onClick={()=>setFilter('all')}>All ({q.length})</button>
+                  <button className={'chip'+(filter==='draft'?' on':'')} onClick={()=>setFilter('draft')}>Draft</button>
+                  <button className={'chip'+(filter==='approved'?' on':'')} onClick={()=>setFilter('approved')}>Approved</button>
                 </div>
-                <div className="opts">
-                  {edit.options.map((o,i)=>(
-                    <div className="option" key={i}>
-                      <input type="radio" checked={edit.correct===i} onChange={()=>setEdit({...edit,correct:i})}/>
-                      <input placeholder={`Option ${String.fromCharCode(65+i)}`} value={o} onChange={e=>{
-                        const z=[...edit.options];z[i]=e.target.value;setEdit({...edit,options:z});
-                      }}/>
-                    </div>
-                  ))}
-                </div>
-                <textarea placeholder="Explanation" value={edit.explanation} onChange={e=>setEdit({...edit,explanation:e.target.value})}/>
-                <div className="builder-actions">
-                  <button className="primary" disabled={saveBusy} onClick={saveEdit}>{saveBusy?'Saving…':'Save changes'}</button>
-                  <button onClick={()=>setEditMode(false)}>Cancel</button>
-                </div>
-              </>
-            )}
-
-            {sel && !editMode && (
-              <>
-                <div className="preview">
-                  <small>STATUS</small>
-                  <b>{sel.status}</b>
-                  <h3>{sel.stem}</h3>
-                  {selOpts.map(o=>(
-                    <p key={o.option_key}><strong>{o.option_key}.</strong> {o.option_text}{o.is_correct?' ✓':''}</p>
-                  ))}
-                  <p>{sel.explanation}</p>
-                  <small>{categoryName(sel.category_id)} · Difficulty {sel.difficulty} · {sel.points} points</small>
-                </div>
-                <div className="builder-actions">
-                  <button className="primary" onClick={()=>setEditMode(true)}>Edit</button>
-                  <button className="primary" onClick={approve} disabled={sel.status==='approved'}>{sel.status==='approved'?'Approved':'Run QA & Approve'}</button>
-                  {selectedRound&&sel.status==='approved'&&(
-                    <button onClick={()=>assign(sel.id)} disabled={selectedRound.questions_locked||assigned.some(a=>a.question_id===sel.id)}>
-                      Add to Round {selectedRound.round_number}
+                <div className="qlist">
+                  {filtered.map(x=>(
+                    <button key={x.id} className={'qcard'+(sel?.id===x.id?' sel':'')} onClick={()=>loadQuestion(x)}>
+                      <div className="meta">
+                        <span className={'badge '+x.status}>{x.status}</span>
+                        <span className="badge">D{x.difficulty}</span>
+                      </div>
+                      <strong>{x.stem}</strong>
+                      <small>{categoryName(x.category_id)} · {x.points} pts</small>
                     </button>
-                  )}
-                  {sel.status==='approved'&&(
-                    <button onClick={()=>addFinal(sel.id)} disabled={finalQ.some(x=>x.question_id===sel.id)||finalQ.length>=10}>
-                      Add to Grand Final
-                    </button>
-                  )}
-                  <label className="upload">
-                    {mediaBusy?'Uploading…':'Upload image/video/audio'}
-                    <input type="file" accept="image/*,video/mp4,audio/*" disabled={mediaBusy} onChange={e=>e.target.files?.[0]&&uploadMedia(e.target.files[0])}/>
-                  </label>
-                  <button onClick={()=>{setSel(null);setSelOpts([]);setEditMode(false)}}>New Draft</button>
-                </div>
-              </>
-            )}
-
-            {!sel && (
-              <>
-                <textarea placeholder="Question stem" value={draft.stem} onChange={e=>setDraft({...draft,stem:e.target.value})}/>
-                <div className="opts">
-                  {draft.options.map((o,i)=>(
-                    <div className="option" key={i}>
-                      <input type="radio" checked={draft.correct===i} onChange={()=>setDraft({...draft,correct:i})}/>
-                      <input placeholder={`Option ${String.fromCharCode(65+i)}`} value={o} onChange={e=>{
-                        const z=[...draft.options];z[i]=e.target.value;setDraft({...draft,options:z});
-                      }}/>
-                    </div>
                   ))}
+                  {!filtered.length&&<div className="empty">No questions match.</div>}
                 </div>
-                <textarea placeholder="Explanation" value={draft.explanation} onChange={e=>setDraft({...draft,explanation:e.target.value})}/>
-                {draft.references.length>0&&(
-                  <div className="preview">
-                    <small>AI-SUGGESTED REFERENCES — VERIFY BEFORE USE</small>
-                    {draft.references.map((r,i)=><p key={i}>{r}</p>)}
-                  </div>
-                )}
-                <button className="primary" onClick={save}>Save as Draft</button>
-              </>
-            )}
-          </div>
-
-          <div className="card">
-            <h2>Round Builder</h2>
-            {rounds.map(r=>(
-              <button className={'round '+(selectedRound?.id===r.id?'sel':'')} key={r.id} onClick={()=>loadAssigned(r)}>
-                <b>R{r.round_number}</b>
-                <span>{r.title}</span>
-                <small>{r.status}</small>
-                <em>{r.questions_locked?'LOCKED':selectedRound?.id===r.id?`${assigned.length} / 3 selected`:'Select'}</em>
-              </button>
-            ))}
-            {selectedRound&&(
-              <>
-                <h3>Selected questions</h3>
-                {assigned.map(a=>(
-                  <div className="assigned" key={a.question_id}>
-                    <b>{a.canonical_order}</b>
-                    <span>{q.find(x=>x.id===a.question_id)?.stem??a.question_id}</span>
-                    <button onClick={()=>remove(a.question_id)} disabled={selectedRound.questions_locked}>Remove</button>
-                  </div>
-                ))}
-                <div className="builder-actions">
-                  <button className="primary" disabled={assigned.length!==3||selectedRound.questions_locked} onClick={lock}>
-                    {selectedRound.questions_locked?'Locked':'Lock 3-question set'}
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-
-          <div className="card">
-            <h2>Grand Final Builder</h2>
-            <p className="muted">Select 10 approved questions not reserved in preliminary rounds.</p>
-            {finalQ.map(x=>(
-              <div className="assigned" key={x.question_id}>
-                <b>{x.canonical_order}</b>
-                <span>{q.find(y=>y.id===x.question_id)?.stem??x.question_id}</span>
-                <button onClick={()=>removeFinal(x.question_id)}>Remove</button>
               </div>
-            ))}
-            <div className="builder-actions">
-              <strong>{finalQ.length} / 10 selected</strong>
-              <button className="primary" disabled={finalQ.length!==10} onClick={validateFinal}>Validate 10-question Final</button>
+
+              <aside className="detail">
+                {!sel&&<div className="empty">Select a question to review. Use + to create.</div>}
+                {sel&&(
+                  <>
+                    <div className="meta" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                      <span className={'badge '+sel.status}>{sel.status}</span>
+                      <span className="badge">D{sel.difficulty}</span>
+                      <span className="badge">{sel.points} pts</span>
+                    </div>
+                    <p className="stem">{sel.stem}</p>
+                    {selOpts.map(o=>(
+                      <div key={o.option_key} className={'optline'+(o.is_correct?' ok':'')}>
+                        <b>{o.option_key}</b><span>{o.option_text}</span>
+                      </div>
+                    ))}
+                    {sel.explanation&&<p className="expl">{sel.explanation}</p>}
+                    <div className="actions">
+                      <button className="btn primary" onClick={()=>openEdit(sel,selOpts)}>Edit</button>
+                      <button className="btn primary" disabled={sel.status==='approved'||busy} onClick={approve}>
+                        {sel.status==='approved'?'Approved':'QA & Approve'}
+                      </button>
+                      {sel.status==='approved'&&(
+                        <button className="btn" disabled={finalQ.length>=10||finalQ.some(f=>f.question_id===sel.id)} onClick={()=>addFinal(sel.id)}>
+                          Add to Final
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+              </aside>
+            </div>
+          )}
+
+          {tab==='rounds'&&(
+            <div className="rounds-layout">
+              <div className="round-list">
+                {rounds.map(r=>(
+                  <button key={r.id} className={'round-btn'+(selectedRound?.id===r.id?' sel':'')} onClick={()=>loadAssigned(r)}>
+                    <b>Round {r.round_number}</b>
+                    <span>{r.title}</span>
+                    <em className={r.questions_locked?'locked':r.status==='open'?'open':''}>
+                      {r.questions_locked?'Locked':r.status}
+                    </em>
+                  </button>
+                ))}
+                {!rounds.length&&<div className="empty">No rounds.</div>}
+              </div>
+
+              <div className="round-detail">
+                {!selectedRound&&<div className="empty">Select a round to organise questions.</div>}
+                {selectedRound&&(
+                  <>
+                    <h3>Round {selectedRound.round_number} — {selectedRound.title}</h3>
+                    <p className="sub">
+                      Status: {selectedRound.status} · {selectedRound.questions_locked?'Locked':'Unlocked'} · {assigned.length}/3 questions
+                    </p>
+
+                    <div className="actions" style={{marginBottom:14}}>
+                      {!selectedRound.questions_locked&&(
+                        <button className="btn primary" disabled={assigned.length!==3} onClick={lock}>
+                          Lock 3-question set
+                        </button>
+                      )}
+                      {selectedRound.questions_locked&&(
+                        <button className="btn danger" disabled={selectedRound.status!=='draft'} onClick={unlock} title={selectedRound.status!=='draft'?'Only draft rounds can unlock':'Unlock to reorganise'}>
+                          Unlock
+                        </button>
+                      )}
+                    </div>
+
+                    {[1,2,3].map(n=>{
+                      const a=assigned.find(x=>x.canonical_order===n);
+                      const qq=a?q.find(x=>x.id===a.question_id):null;
+                      return (
+                        <div className="slot" key={n}>
+                          <header>
+                            <div className="num">{n}</div>
+                            {!selectedRound.questions_locked&&a&&(
+                              <button className="btn danger" onClick={()=>remove(a.question_id)}>Remove</button>
+                            )}
+                          </header>
+                          {qq?
+                            <div>
+                              <strong style={{fontSize:14}}>{qq.stem}</strong>
+                              <small style={{display:'block',marginTop:6,color:'#6b7280'}}>{categoryName(qq.category_id)} · D{qq.difficulty}</small>
+                            </div>
+                            :<span className="empty" style={{padding:8}}>Empty slot</span>}
+                        </div>
+                      );
+                    })}
+
+                    {!selectedRound.questions_locked&&assigned.length<3&&(
+                      <div className="picker">
+                        <label style={{fontSize:12,fontWeight:700,color:'#6b7280'}}>Add approved question</label>
+                        <select defaultValue="" onChange={e=>{if(e.target.value){void assign(e.target.value);e.target.value=''}}}>
+                          <option value="">Choose…</option>
+                          {approvedFree.map(x=>(
+                            <option key={x.id} value={x.id}>{x.stem.slice(0,80)}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {tab==='final'&&(
+            <div>
+              <div className="actions" style={{marginBottom:14}}>
+                <strong>{finalQ.length} / 10 selected</strong>
+                <button className="btn primary" disabled={finalQ.length!==10} onClick={validateFinal}>Validate Final</button>
+              </div>
+              <div className="final-list">
+                {finalQ.map(x=>{
+                  const qq=q.find(y=>y.id===x.question_id);
+                  return (
+                    <div className="slot" key={x.question_id}>
+                      <header>
+                        <div className="num">{x.canonical_order}</div>
+                        <button className="btn danger" onClick={()=>removeFinal(x.question_id)}>Remove</button>
+                      </header>
+                      <strong style={{fontSize:14}}>{qq?.stem??x.question_id}</strong>
+                    </div>
+                  );
+                })}
+              </div>
+              {finalQ.length<10&&(
+                <div className="picker">
+                  <label style={{fontSize:12,fontWeight:700,color:'#6b7280'}}>Add approved question</label>
+                  <select defaultValue="" onChange={e=>{if(e.target.value){void addFinal(e.target.value);e.target.value=''}}}>
+                    <option value="">Choose…</option>
+                    {q.filter(x=>x.status==='approved'&&!finalQ.some(f=>f.question_id===x.id)).map(x=>(
+                      <option key={x.id} value={x.id}>{x.stem.slice(0,80)}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {tab==='bank'&&(
+        <button className="fab" aria-label="Create question" onClick={openCreate}>+</button>
+      )}
+
+      {modal&&(
+        <div className="overlay" onClick={e=>{if(e.target===e.currentTarget)setModal(null)}}>
+          <div className="modal" role="dialog">
+            <div className="close-row">
+              <h2>{modal==='create'?'New question':'Edit question'}</h2>
+              <button className="btn" onClick={()=>setModal(null)}>Close</button>
+            </div>
+            {modal==='create'&&(
+              <>
+                <label>AI topic (optional)</label>
+                <div className="row2">
+                  <input value={aiTopic} onChange={e=>setAiTopic(e.target.value)} placeholder="Topic / learning objective"/>
+                  <button className="btn" disabled={busy||!aiTopic.trim()} onClick={generate}>{busy?'…':'Generate with AI'}</button>
+                </div>
+              </>
+            )}
+            {formFields}
+            <div className="modal-actions">
+              <button className="btn primary" disabled={busy} onClick={modal==='create'?saveCreate:saveEdit}>
+                {busy?'Saving…':modal==='create'?'Save as draft':'Save changes'}
+              </button>
+              <button className="btn" onClick={()=>setModal(null)}>Cancel</button>
             </div>
           </div>
-        </section>
-      </main>
+        </div>
+      )}
     </div>
   );
 }
