@@ -14,8 +14,9 @@ type C={id:string;name:string;slug:string};
 type O={option_key:string;option_text:string;is_correct:boolean};
 type FQ={question_id:string;canonical_order:number};
 type RQ={round_id:string;question_id:string;canonical_order:number};
-type Tab='bank'|'rounds'|'final';
+type Tab='organize'|'bank'|'final';
 type Form={stem:string;category:string;difficulty:number;points:number;options:string[];correct:number;explanation:string};
+type DragPayload={questionId:string;from:'pool'|string;fromOrder?:number}; // from = 'pool' or roundId
 
 const emptyForm=():Form=>({stem:'',category:'',difficulty:3,points:10,options:['','','',''],correct:0,explanation:''});
 const slug=(x:string)=>x.toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
@@ -40,7 +41,7 @@ async function rpc(n:string,a:Record<string,unknown>={}){
 }
 
 function App(){
-  const[tab,setTab]=useState<Tab>('bank');
+  const[tab,setTab]=useState<Tab>('organize');
   const[eventId,setEventId]=useState(configuredEvent??'');
   const[q,setQ]=useState<Q[]>([]);
   const[rounds,setRounds]=useState<R[]>([]);
@@ -50,16 +51,14 @@ function App(){
   const[selOpts,setSelOpts]=useState<O[]>([]);
   const[search,setSearch]=useState('');
   const[filter,setFilter]=useState<'all'|'draft'|'approved'>('all');
-  const[selectedRound,setSelectedRound]=useState<R|null>(null);
-  const[assigned,setAssigned]=useState<{question_id:string;canonical_order:number}[]>([]);
   const[finalQ,setFinalQ]=useState<FQ[]>([]);
   const[status,setStatus]=useState('Ready');
   const[modal,setModal]=useState<'create'|'edit'|null>(null);
   const[form,setForm]=useState<Form>(emptyForm());
   const[aiTopic,setAiTopic]=useState('');
   const[busy,setBusy]=useState(false);
-  const[lastRemoved,setLastRemoved]=useState<{roundId:string;questionId:string;stem:string}|null>(null);
-  const[poolSearch,setPoolSearch]=useState('');
+  const[dragOver,setDragOver]=useState<string|null>(null); // `${roundId}:${order}` or 'pool'
+  const[draggingId,setDraggingId]=useState<string|null>(null);
 
   const resolveEvent=async()=>{
     if(configuredEvent){setEventId(configuredEvent);return configuredEvent}
@@ -84,38 +83,36 @@ function App(){
         sb.from('questions').select('id,event_id,category_id,stem,status,difficulty,points,explanation,reference_text,created_at').eq('event_id',eid).order('created_at',{ascending:false}),
         sb.from('categories').select('id,name,slug').eq('event_id',eid).order('name'),
         sb.from('final_questions').select('question_id,canonical_order').eq('event_id',eid).order('canonical_order'),
-        roundIds.length
-          ? sb.from('round_questions').select('round_id,question_id,canonical_order').in('round_id',roundIds)
-          : Promise.resolve({data:[],error:null}),
+        roundIds.length?sb.from('round_questions').select('round_id,question_id,canonical_order').in('round_id',roundIds):Promise.resolve({data:[],error:null}),
       ]);
       if(a.error||c.error||d.error||rq.error)throw(a.error||c.error||d.error||rq.error);
-      setQ(a.data??[]);
-      setRounds(rlist);
-      setCats(c.data??[]);
-      setFinalQ(d.data??[]);
-      setAllRQ((rq.data??[]) as RQ[]);
+      setQ(a.data??[]);setRounds(rlist);setCats(c.data??[]);setFinalQ(d.data??[]);setAllRQ((rq.data??[]) as RQ[]);
     }catch(e){setStatus(errText(e))}
   };
 
   useEffect(()=>{resolveEvent().then(load).catch(e=>setStatus(errText(e)))},[]);
 
   const categoryName=(id:string|null)=>cats.find(c=>c.id===id)?.name??'Uncategorised';
-  const roundById=(id:string)=>rounds.find(r=>r.id===id);
 
-  const usageByQuestion=useMemo(()=>{
-    const map=new Map<string,{roundId:string;roundNumber:number;order:number}>();
+  const byRound=useMemo(()=>{
+    const m=new Map<string,Map<number,string>>(); // roundId -> order -> questionId
+    for(const r of rounds)m.set(r.id,new Map());
     for(const row of allRQ){
-      const rr=roundById(row.round_id);
-      map.set(row.question_id,{roundId:row.round_id,roundNumber:rr?.round_number??0,order:row.canonical_order});
+      const mm=m.get(row.round_id);
+      if(mm)mm.set(row.canonical_order,row.question_id);
     }
-    return map;
-  },[allRQ,rounds]);
+    return m;
+  },[rounds,allRQ]);
 
-  const filtered=useMemo(()=>{
+  const assignedIds=useMemo(()=>new Set(allRQ.map(r=>r.question_id)),[allRQ]);
+  const finalIds=useMemo(()=>new Set(finalQ.map(f=>f.question_id)),[finalQ]);
+
+  const pool=useMemo(()=>q.filter(x=>x.status==='approved'&&!assignedIds.has(x.id)&&!finalIds.has(x.id)),[q,assignedIds,finalIds]);
+
+  const filteredBank=useMemo(()=>{
     return q.filter(x=>{
       if(filter!=='all'&&x.status!==filter)return false;
-      const hay=(x.stem+' '+categoryName(x.category_id)).toLowerCase();
-      return hay.includes(search.toLowerCase());
+      return (x.stem+' '+categoryName(x.category_id)).toLowerCase().includes(search.toLowerCase());
     });
   },[q,cats,search,filter]);
 
@@ -150,13 +147,13 @@ function App(){
   const saveCreate=async()=>{
     try{
       if(!sb||!eventId)throw Error('Event not configured');
-      if(!form.stem.trim()||form.options.some(x=>!x.trim()))throw Error('Stem and all four options are required');
-      setBusy(true);setStatus('Saving draft…');
+      if(!form.stem.trim()||form.options.some(x=>!x.trim()))throw Error('Stem and all four options required');
+      setBusy(true);setStatus('Saving…');
       const category_id=await ensureCategory(form.category);
       const{data:user}=await sb.auth.getUser();
       const{data:x,error}=await sb.from('questions').insert({event_id:eventId,category_id,stem:form.stem.trim(),status:'draft',difficulty:form.difficulty,points:form.points,explanation:form.explanation.trim()||null,created_by:user.user?.id??null,ai_metadata:aiTopic?{generated:true,topic:aiTopic}:{}}).select('id').single();
       if(error)throw error;
-      const{error:oe}=await sb.from('question_options').insert(form.options.map((option_text,i)=>({question_id:x.id,option_key:String.fromCharCode(65+i),option_text:option_text.trim(),is_correct:i===form.correct})));
+      const{error:oe}=await sb.from('question_options').insert(form.options.map((t,i)=>({question_id:x.id,option_key:String.fromCharCode(65+i),option_text:t.trim(),is_correct:i===form.correct})));
       if(oe)throw oe;
       setModal(null);setStatus('Draft saved');await load(eventId);
     }catch(e){setStatus(errText(e))}finally{setBusy(false)}
@@ -165,38 +162,35 @@ function App(){
   const saveEdit=async()=>{
     if(!sel||!sb)return;
     try{
-      if(!form.stem.trim()||form.options.some(x=>!x.trim()))throw Error('Stem and all four options are required');
-      setBusy(true);setStatus('Saving changes…');
+      if(!form.stem.trim()||form.options.some(x=>!x.trim()))throw Error('Stem and all four options required');
+      setBusy(true);setStatus('Saving…');
       const category_id=await ensureCategory(form.category);
       const{error}=await sb.from('questions').update({stem:form.stem.trim(),category_id,difficulty:form.difficulty,points:form.points,explanation:form.explanation.trim()||null}).eq('id',sel.id);
       if(error)throw error;
-      const{error:de}=await sb.from('question_options').delete().eq('question_id',sel.id);
-      if(de)throw de;
-      const{error:oe}=await sb.from('question_options').insert(form.options.map((option_text,i)=>({question_id:sel.id,option_key:String.fromCharCode(65+i),option_text:option_text.trim(),is_correct:i===form.correct})));
+      await sb.from('question_options').delete().eq('question_id',sel.id);
+      const{error:oe}=await sb.from('question_options').insert(form.options.map((t,i)=>({question_id:sel.id,option_key:String.fromCharCode(65+i),option_text:t.trim(),is_correct:i===form.correct})));
       if(oe)throw oe;
-      setModal(null);setStatus('Question updated');await load(eventId);
-      await loadQuestion({...sel,stem:form.stem.trim(),category_id,difficulty:form.difficulty,points:form.points,explanation:form.explanation.trim()||null});
+      setModal(null);setStatus('Updated');await load(eventId);
     }catch(e){setStatus(errText(e))}finally{setBusy(false)}
   };
 
   const generate=async()=>{
     try{
-      if(!sb||!eventId)throw Error('Event not configured');
       if(!aiTopic.trim())throw Error('Enter a topic');
-      setBusy(true);setStatus('Generating with AI…');
-      const{data,error}=await sb.functions.invoke('question-ai',{body:{action:'generate',event_id:eventId,topic:aiTopic,difficulty:form.difficulty,category:form.category||undefined}});
+      setBusy(true);
+      const{data,error}=await sb!.functions.invoke('question-ai',{body:{action:'generate',event_id:eventId,topic:aiTopic,difficulty:form.difficulty,category:form.category||undefined}});
       if(error)throw error;
       if(data?.error)throw Error(data.message||data.detail||data.error);
       const d=data.draft;
       setForm({stem:d.stem,category:d.category??form.category,difficulty:d.difficulty??form.difficulty,points:10,options:Array.isArray(d.options)?d.options:form.options,correct:typeof d.correct_index==='number'?d.correct_index:0,explanation:d.explanation??''});
-      setStatus('AI draft ready — review before saving');
+      setStatus('AI draft ready');
     }catch(e){setStatus(errText(e))}finally{setBusy(false)}
   };
 
   const approve=async()=>{
     if(!sel||!sb)return;
     try{
-      setBusy(true);setStatus('Running QA…');
+      setBusy(true);
       const correct=selOpts.findIndex(o=>o.is_correct);
       const{data:qa,error:qe}=await sb.functions.invoke('question-ai',{body:{action:'qa',event_id:eventId,stem:sel.stem,options:selOpts.map(o=>o.option_text),correct_index:correct,explanation:sel.explanation??'',difficulty:sel.difficulty,category:categoryName(sel.category_id)}});
       if(qe)throw qe;
@@ -208,110 +202,168 @@ function App(){
     }catch(e){setStatus(errText(e))}finally{setBusy(false)}
   };
 
-  const loadAssigned=async(r:R)=>{
-    setSelectedRound(r);
-    setLastRemoved(null);
-    if(!sb)return;
-    const{data,error}=await sb.from('round_questions').select('question_id,canonical_order').eq('round_id',r.id).order('canonical_order');
-    if(error)setStatus(errText(error));else setAssigned(data??[]);
+  /** Rebuild a round's assignments to match desired order of question ids (length ≤ 3). */
+  const setRoundQuestions=async(round:R,orderedIds:string[])=>{
+    if(round.questions_locked)throw Error('Round is locked — Unlock first');
+    if(orderedIds.length>3)throw Error('Max 3 questions per round');
+    // Remove all current, then re-add in order (simple + reliable with existing RPCs)
+    const current=allRQ.filter(r=>r.round_id===round.id);
+    for(const row of current){
+      await rpc('remove_question_from_round',{p_round_id:round.id,p_question_id:row.question_id});
+    }
+    for(let i=0;i<orderedIds.length;i++){
+      await rpc('assign_question_to_round',{p_round_id:round.id,p_question_id:orderedIds[i],p_canonical_order:i+1});
+    }
+    await load(eventId);
   };
 
-  const assign=async(questionId:string)=>{
-    if(!selectedRound)return;
+  const lock=async(round:R)=>{
     try{
-      if(selectedRound.questions_locked)throw Error('Unlock the round first');
-      if(assigned.length>=3)throw Error('Round already has 3 questions');
-      const usage=usageByQuestion.get(questionId);
-      if(usage&&usage.roundId!==selectedRound.id)throw Error(`Already in Round ${usage.roundNumber}`);
-      setStatus('Assigning…');
-      await rpc('assign_question_to_round',{p_round_id:selectedRound.id,p_question_id:questionId,p_canonical_order:assigned.length+1});
-      if(lastRemoved?.questionId===questionId)setLastRemoved(null);
+      setStatus('Locking…');
+      await rpc('lock_round_question_set',{p_round_id:round.id});
+      setStatus(`Round ${round.round_number} locked`);
       await load(eventId);
-      await loadAssigned(selectedRound);
-      setStatus('Question added to round');
     }catch(e){setStatus(errText(e))}
   };
 
-  const remove=async(questionId:string)=>{
-    if(!selectedRound)return;
-    const qq=q.find(x=>x.id===questionId);
-    if(!window.confirm(`Remove this question from Round ${selectedRound.round_number}?\n\n${qq?.stem??questionId}\n\nYou can Undo for a short time after.`))return;
+  const unlock=async(round:R)=>{
     try{
+      setStatus('Unlocking…');
+      await rpc('unlock_round_question_set',{p_round_id:round.id});
+      setStatus(`Round ${round.round_number} unlocked`);
+      await load(eventId);
+    }catch(e){setStatus(errText(e))}
+  };
+
+  const onDragStart=(e:React.DragEvent,payload:DragPayload)=>{
+    e.dataTransfer.setData('application/json',JSON.stringify(payload));
+    e.dataTransfer.effectAllowed='move';
+    setDraggingId(payload.questionId);
+  };
+
+  const onDragEnd=()=>{setDraggingId(null);setDragOver(null)};
+
+  const handleDropOnSlot=async(round:R,order:number,e:React.DragEvent)=>{
+    e.preventDefault();
+    setDragOver(null);
+    setDraggingId(null);
+    try{
+      if(round.questions_locked)throw Error('Unlock this round first');
+      const raw=e.dataTransfer.getData('application/json');
+      if(!raw)return;
+      const payload=JSON.parse(raw) as DragPayload;
+      const map=byRound.get(round.id)||new Map<number,string>();
+      const current:[number,string][]=[[1,map.get(1)||''],[2,map.get(2)||''],[3,map.get(3)||'']];
+      let ids=current.map(([,id])=>id).filter(Boolean);
+
+      // Remove from source round if needed
+      if(payload.from!=='pool'&&payload.from!==round.id){
+        const src=rounds.find(r=>r.id===payload.from);
+        if(src){
+          if(src.questions_locked)throw Error(`Round ${src.round_number} is locked`);
+          const srcMap=byRound.get(src.id)||new Map();
+          const srcIds=[1,2,3].map(n=>srcMap.get(n)).filter(Boolean) as string[];
+          await setRoundQuestions(src,srcIds.filter(id=>id!==payload.questionId));
+        }
+      } else if(payload.from===round.id){
+        ids=ids.filter(id=>id!==payload.questionId);
+      }
+
+      // Place into target order (swap if occupied)
+      const existingAt=map.get(order);
+      const without=ids.filter(id=>id!==payload.questionId);
+      // Build new 3-slot array
+      const slots: (string|null)[]=[map.get(1)||null,map.get(2)||null,map.get(3)||null];
+      if(payload.from===round.id){
+        // clear old position
+        for(let i=0;i<3;i++)if(slots[i]===payload.questionId)slots[i]=null;
+      }
+      const displaced=slots[order-1];
+      slots[order-1]=payload.questionId;
+      if(displaced&&displaced!==payload.questionId&&payload.from===round.id&&payload.fromOrder){
+        // swap into old slot
+        slots[payload.fromOrder-1]=displaced;
+      } else if(displaced&&displaced!==payload.questionId&&payload.from!==round.id){
+        // push displaced to first empty or fail if full
+        const emptyIdx=slots.findIndex((x,i)=>i!==order-1&&!x);
+        if(emptyIdx>=0)slots[emptyIdx]=displaced;
+        else throw Error('Round is full — remove a question first');
+      }
+      if(payload.from==='pool'&&!slots.includes(payload.questionId)){
+        // already set above
+      }
+      const finalIds=slots.filter(Boolean) as string[];
+      // if coming from pool and round had empty slot, finalIds is fine
+      setStatus('Updating…');
+      await setRoundQuestions(round,finalIds);
+      setStatus(`Updated Round ${round.round_number}`);
+    }catch(err){setStatus(errText(err))}
+  };
+
+  const removeFromRound=async(round:R,questionId:string)=>{
+    try{
+      if(round.questions_locked)throw Error('Unlock first');
+      const map=byRound.get(round.id)||new Map();
+      const ids=[1,2,3].map(n=>map.get(n)).filter(id=>id&&id!==questionId) as string[];
       setStatus('Removing…');
-      await rpc('remove_question_from_round',{p_round_id:selectedRound.id,p_question_id:questionId});
-      setLastRemoved({roundId:selectedRound.id,questionId,stem:qq?.stem??questionId});
-      await load(eventId);
-      await loadAssigned(selectedRound);
-      setStatus('Removed — use Undo if that was a mistake');
+      await setRoundQuestions(round,ids);
+      setStatus('Moved to unassigned pool');
     }catch(e){setStatus(errText(e))}
-  };
-
-  const undoRemove=async()=>{
-    if(!lastRemoved||!selectedRound||selectedRound.id!==lastRemoved.roundId)return;
-    await assign(lastRemoved.questionId);
-  };
-
-  const lock=async()=>{
-    if(!selectedRound)return;
-    try{setStatus('Locking…');await rpc('lock_round_question_set',{p_round_id:selectedRound.id});setSelectedRound({...selectedRound,questions_locked:true});setStatus('Question set locked');await load(eventId)}catch(e){setStatus(errText(e))}
-  };
-
-  const unlock=async()=>{
-    if(!selectedRound)return;
-    try{setStatus('Unlocking…');await rpc('unlock_round_question_set',{p_round_id:selectedRound.id});setSelectedRound({...selectedRound,questions_locked:false});setStatus('Unlocked');await load(eventId)}catch(e){setStatus(errText(e))}
   };
 
   const addFinal=async(id:string)=>{
-    try{if(finalQ.length>=10)throw Error('Final already has 10 questions');setStatus('Adding…');await rpc('assign_question_to_final',{p_event_id:eventId,p_question_id:id,p_canonical_order:finalQ.length+1});await load(eventId);setStatus('Added to Grand Final')}catch(e){setStatus(errText(e))}
+    try{if(finalQ.length>=10)throw Error('Final full');await rpc('assign_question_to_final',{p_event_id:eventId,p_question_id:id,p_canonical_order:finalQ.length+1});await load(eventId);setStatus('Added to Final')}catch(e){setStatus(errText(e))}
   };
-
   const removeFinal=async(id:string)=>{
-    try{setStatus('Removing…');await rpc('remove_question_from_final',{p_event_id:eventId,p_question_id:id});await load(eventId);setStatus('Removed from Final')}catch(e){setStatus(errText(e))}
+    try{await rpc('remove_question_from_final',{p_event_id:eventId,p_question_id:id});await load(eventId);setStatus('Removed from Final')}catch(e){setStatus(errText(e))}
   };
-
   const validateFinal=async()=>{
-    try{await rpc('validate_final_question_set',{p_event_id:eventId});setStatus('Grand Final valid: 10/10')}catch(e){setStatus(errText(e))}
+    try{await rpc('validate_final_question_set',{p_event_id:eventId});setStatus('Final valid 10/10')}catch(e){setStatus(errText(e))}
   };
 
-  // Pool for current round: approved questions with clear usage labels
-  const pool=useMemo(()=>{
-    const s=poolSearch.toLowerCase();
-    return q.filter(x=>{
-      if(x.status!=='approved')return false;
-      if(s&&!x.stem.toLowerCase().includes(s))return false;
-      return true;
-    }).map(x=>{
-      const u=usageByQuestion.get(x.id);
-      const inFinal=finalQ.some(f=>f.question_id===x.id);
-      let label:'available'|'this-round'|'other-round'|'final';
-      if(u&&selectedRound&&u.roundId===selectedRound.id)label='this-round';
-      else if(u)label='other-round';
-      else if(inFinal)label='final';
-      else label='available';
-      return {q:x,label,roundNumber:u?.roundNumber};
-    });
-  },[q,poolSearch,usageByQuestion,selectedRound,finalQ]);
-
-  const availablePool=pool.filter(p=>p.label==='available');
-  const otherPool=pool.filter(p=>p.label!=='available'&&p.label!=='this-round');
+  const renderTile=(questionId:string,opts?:{from:string;fromOrder?:number;locked?:boolean})=>{
+    const qq=q.find(x=>x.id===questionId);
+    if(!qq)return <div className="drop-hint">Missing question</div>;
+    const locked=!!opts?.locked;
+    return (
+      <div
+        className={'q-tile'+(draggingId===questionId?' dragging':'')}
+        draggable={!locked}
+        onDragStart={e=>!locked&&onDragStart(e,{questionId,from:opts?.from||'pool',fromOrder:opts?.fromOrder})}
+        onDragEnd={onDragEnd}
+      >
+        <strong>{qq.stem}</strong>
+        <div className="tile-meta">
+          <span className="badge">D{qq.difficulty}</span>
+          <span className="badge">{categoryName(qq.category_id)}</span>
+        </div>
+        {!locked&&opts?.from&&opts.from!=='pool'&&(
+          <div className="tile-actions">
+            <button type="button" className="btn sm danger" onClick={()=>{
+              const r=rounds.find(x=>x.id===opts.from);
+              if(r)void removeFromRound(r,questionId);
+            }}>Remove to pool</button>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const formFields=(
     <>
-      <label>Question stem</label>
-      <textarea value={form.stem} onChange={e=>setForm({...form,stem:e.target.value})}/>
+      <label>Stem</label><textarea value={form.stem} onChange={e=>setForm({...form,stem:e.target.value})}/>
       <div className="row2">
         <div><label>Category</label><input value={form.category} onChange={e=>setForm({...form,category:e.target.value})}/></div>
         <div><label>Difficulty</label><input type="number" min={1} max={5} value={form.difficulty} onChange={e=>setForm({...form,difficulty:+e.target.value})}/></div>
       </div>
-      <label>Options (select correct)</label>
+      <label>Options</label>
       <div className="opts">{form.options.map((o,i)=>(
         <div className="option" key={i}>
-          <input type="radio" name="correct" checked={form.correct===i} onChange={()=>setForm({...form,correct:i})}/>
-          <input value={o} onChange={e=>{const z=[...form.options];z[i]=e.target.value;setForm({...form,options:z})}} placeholder={`Option ${String.fromCharCode(65+i)}`}/>
+          <input type="radio" checked={form.correct===i} onChange={()=>setForm({...form,correct:i})}/>
+          <input value={o} onChange={e=>{const z=[...form.options];z[i]=e.target.value;setForm({...form,options:z})}}/>
         </div>
       ))}</div>
-      <label>Explanation</label>
-      <textarea value={form.explanation} onChange={e=>setForm({...form,explanation:e.target.value})}/>
+      <label>Explanation</label><textarea value={form.explanation} onChange={e=>setForm({...form,explanation:e.target.value})}/>
     </>
   );
 
@@ -323,193 +375,146 @@ function App(){
       </header>
 
       <nav className="tabs">
-        <button className={'tab'+(tab==='bank'?' on':'')} onClick={()=>setTab('bank')}>Question Bank</button>
-        <button className={'tab'+(tab==='rounds'?' on':'')} onClick={()=>setTab('rounds')}>Rounds</button>
+        <button className={'tab'+(tab==='organize'?' on':'')} onClick={()=>setTab('organize')}>Organize by round</button>
+        <button className={'tab'+(tab==='bank'?' on':'')} onClick={()=>setTab('bank')}>All questions</button>
         <button className={'tab'+(tab==='final'?' on':'')} onClick={()=>setTab('final')}>Grand Final</button>
       </nav>
 
       <div className="panel"><div className="sheet">
-        {tab==='bank'&&(
+        {tab==='organize'&&(
           <>
-            <input className="search" placeholder="Search questions…" value={search} onChange={e=>setSearch(e.target.value)}/>
-            <div className="filters">
-              <button className={'chip'+(filter==='all'?' on':'')} onClick={()=>setFilter('all')}>All ({q.length})</button>
-              <button className={'chip'+(filter==='draft'?' on':'')} onClick={()=>setFilter('draft')}>Draft</button>
-              <button className={'chip'+(filter==='approved'?' on':'')} onClick={()=>setFilter('approved')}>Approved</button>
-            </div>
-            <div className="qlist">
-              {filtered.map(x=>{
-                const open=sel?.id===x.id;
-                const u=usageByQuestion.get(x.id);
-                return (
-                  <div key={x.id} className={'qcard'+(open?' sel':'')}>
-                    <button type="button" className="qcard-head" onClick={()=>loadQuestion(x)}>
-                      <div className="meta">
-                        <span className={'badge '+x.status}>{x.status}</span>
-                        <span className="badge">D{x.difficulty}</span>
-                        {u&&<span className="badge in-round">R{u.roundNumber}</span>}
-                      </div>
-                      <strong>{x.stem}</strong>
-                      <small>{categoryName(x.category_id)} · {x.points} pts</small>
-                    </button>
-                    {open&&(
-                      <div className="qcard-body">
-                        {selOpts.map(o=><div key={o.option_key} className={'optline'+(o.is_correct?' ok':'')}><b>{o.option_key}</b><span>{o.option_text}</span></div>)}
-                        {sel?.explanation&&<p className="expl">{sel.explanation}</p>}
-                        <div className="actions">
-                          <button type="button" className="btn primary" onClick={()=>openEdit(x,selOpts)}>Edit</button>
-                          <button type="button" className="btn primary" disabled={x.status==='approved'||busy} onClick={approve}>{x.status==='approved'?'Approved':'QA & Approve'}</button>
-                        </div>
-                      </div>
-                    )}
+            <p className="hint">Drag questions into slots <b>1 · 2 · 3</b> under each round. Drop on another slot to <b>swap</b>. Unlock a round to edit; Lock when the set is final.</p>
+
+            {rounds.map(r=>{
+              const map=byRound.get(r.id)||new Map<number,string>();
+              const count=[1,2,3].filter(n=>map.get(n)).length;
+              return (
+                <div className={'round-block'+(r.questions_locked?' locked':'')} key={r.id}>
+                  <div className="round-head">
+                    <div>
+                      <h3>Round {r.round_number} — {r.title}</h3>
+                    </div>
+                    <div className="meta">
+                      <span className="badge">{count}/3</span>
+                      {r.questions_locked?<span className="badge locked">Locked</span>:<span className="badge">{r.status}</span>}
+                      {!r.questions_locked&&(
+                        <button type="button" className="btn sm primary" disabled={count!==3} onClick={()=>lock(r)}>Lock</button>
+                      )}
+                      {r.questions_locked&&(
+                        <button type="button" className="btn sm danger" disabled={r.status!=='draft'} onClick={()=>unlock(r)}>Unlock</button>
+                      )}
+                    </div>
                   </div>
-                );
-              })}
+                  {[1,2,3].map(order=>{
+                    const qid=map.get(order);
+                    const key=`${r.id}:${order}`;
+                    return (
+                      <div
+                        key={key}
+                        className={'slot-row'+(dragOver===key?' drag-over':'')}
+                        onDragOver={e=>{e.preventDefault();if(!r.questions_locked)setDragOver(key)}}
+                        onDragLeave={()=>setDragOver(d=>d===key?null:d)}
+                        onDrop={e=>handleDropOnSlot(r,order,e)}
+                      >
+                        <div className={'order-badge'+(qid?'':' empty')}>{order}</div>
+                        {qid
+                          ? renderTile(qid,{from:r.id,fromOrder:order,locked:r.questions_locked})
+                          : <div className="drop-hint">{r.questions_locked?'Empty':'Drop question here'}</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+
+            <div className="pool-block">
+              <h3>Unassigned approved ({pool.length})</h3>
+              <p className="hint">Drag from here into any unlocked round slot.</p>
+              <div className="pool-list">
+                {!pool.length&&<div className="empty">No free approved questions.</div>}
+                {pool.map(x=>(
+                  <div key={x.id}>{renderTile(x.id,{from:'pool'})}</div>
+                ))}
+              </div>
             </div>
           </>
         )}
 
-        {tab==='rounds'&&(
+        {tab==='bank'&&(
           <>
-            <div className="round-chips">
-              {rounds.map(r=>(
-                <button key={r.id} type="button" className={'round-chip'+(selectedRound?.id===r.id?' sel':'')} onClick={()=>loadAssigned(r)}>
-                  R{r.round_number}
-                  <em className={r.questions_locked?'locked':''}>{r.questions_locked?'Locked':r.status} · {allRQ.filter(x=>x.round_id===r.id).length}/3</em>
-                </button>
-              ))}
+            <input className="search" placeholder="Search…" value={search} onChange={e=>setSearch(e.target.value)}/>
+            <div className="filters">
+              <button className={'chip'+(filter==='all'?' on':'')} onClick={()=>setFilter('all')}>All</button>
+              <button className={'chip'+(filter==='draft'?' on':'')} onClick={()=>setFilter('draft')}>Draft</button>
+              <button className={'chip'+(filter==='approved'?' on':'')} onClick={()=>setFilter('approved')}>Approved</button>
             </div>
-
-            {!selectedRound&&<div className="empty">Select a round above to organise its 3 questions.</div>}
-
-            {selectedRound&&(
-              <>
-                <h3 style={{margin:'0 0 4px'}}>Round {selectedRound.round_number} — {selectedRound.title}</h3>
-                <p style={{margin:'0 0 12px',color:'#6b7280',fontSize:13}}>
-                  {selectedRound.questions_locked?'Locked':'Unlocked'} · {assigned.length}/3 selected
-                </p>
-
-                <div className="actions" style={{marginBottom:12}}>
-                  {!selectedRound.questions_locked&&(
-                    <button className="btn primary" disabled={assigned.length!==3} onClick={lock}>Lock set (finalise)</button>
-                  )}
-                  {selectedRound.questions_locked&&(
-                    <button className="btn danger" disabled={selectedRound.status!=='draft'} onClick={unlock}>Unlock to edit</button>
+            {filteredBank.map(x=>{
+              const open=sel?.id===x.id;
+              const usage=allRQ.find(r=>r.question_id===x.id);
+              const rr=usage?rounds.find(r=>r.id===usage.round_id):null;
+              return (
+                <div key={x.id} style={{border:'1px solid #e5e8ef',borderRadius:14,marginBottom:8,overflow:'hidden'}}>
+                  <button type="button" style={{width:'100%',textAlign:'left',border:0,background:open?'#f8fafc':'#fff',padding:12,cursor:'pointer',font:'inherit'}} onClick={()=>loadQuestion(x)}>
+                    <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:6}}>
+                      <span className={'badge '+x.status}>{x.status}</span>
+                      {rr&&<span className="badge">R{rr.round_number} · #{usage!.canonical_order}</span>}
+                    </div>
+                    <strong style={{fontSize:14}}>{x.stem}</strong>
+                  </button>
+                  {open&&(
+                    <div style={{padding:12,borderTop:'1px solid #edf0f4',background:'#f8fafc'}}>
+                      {selOpts.map(o=><div key={o.option_key} className={'optline'+(o.is_correct?' ok':'')}><b>{o.option_key}</b> {o.option_text}</div>)}
+                      <div className="actions">
+                        <button className="btn primary" onClick={()=>openEdit(x,selOpts)}>Edit</button>
+                        <button className="btn primary" disabled={x.status==='approved'||busy} onClick={approve}>{x.status==='approved'?'Approved':'QA & Approve'}</button>
+                      </div>
+                    </div>
                   )}
                 </div>
-
-                {lastRemoved&&lastRemoved.roundId===selectedRound.id&&(
-                  <div className="undo-bar">
-                    <p><b>Removed:</b> {lastRemoved.stem}</p>
-                    <button className="btn primary" type="button" disabled={selectedRound.questions_locked||assigned.length>=3} onClick={undoRemove}>Undo — put back</button>
-                  </div>
-                )}
-
-                <div className="section-title">This round’s slots</div>
-                {[1,2,3].map(n=>{
-                  const a=assigned.find(x=>x.canonical_order===n);
-                  const qq=a?q.find(x=>x.id===a.question_id):null;
-                  return (
-                    <div className={'slot'+(qq?' filled':'')} key={n}>
-                      <header>
-                        <div className="num">{n}</div>
-                        {!selectedRound.questions_locked&&a&&(
-                          <button type="button" className="btn danger" onClick={()=>remove(a.question_id)}>Remove</button>
-                        )}
-                      </header>
-                      {qq?
-                        <div>
-                          <strong style={{fontSize:14,lineHeight:1.35}}>{qq.stem}</strong>
-                          <small style={{display:'block',marginTop:6,color:'#6b7280'}}>{categoryName(qq.category_id)} · D{qq.difficulty}</small>
-                        </div>
-                        :<span style={{color:'#9ca3af',fontSize:13}}>Empty — add from Available below</span>}
-                    </div>
-                  );
-                })}
-
-                {!selectedRound.questions_locked&&assigned.length<3&&(
-                  <>
-                    <div className="section-title">Available to add ({availablePool.length})</div>
-                    <input className="search" placeholder="Search available questions…" value={poolSearch} onChange={e=>setPoolSearch(e.target.value)}/>
-                    {!availablePool.length&&<div className="empty">No free approved questions. Approve more in Bank, or free one from another round.</div>}
-                    {availablePool.map(({q:x})=>(
-                      <div className="avail-card" key={x.id}>
-                        <div className="row">
-                          <span className="badge free">Available</span>
-                          <span className="badge">D{x.difficulty}</span>
-                        </div>
-                        <strong>{x.stem}</strong>
-                        <small style={{color:'#6b7280'}}>{categoryName(x.category_id)}</small>
-                        <button type="button" className="btn primary" onClick={()=>assign(x.id)}>Add to Round {selectedRound.round_number}</button>
-                      </div>
-                    ))}
-
-                    {otherPool.length>0&&(
-                      <>
-                        <div className="section-title">Already used elsewhere</div>
-                        {otherPool.map(({q:x,label,roundNumber})=>(
-                          <div className="avail-card disabled" key={x.id}>
-                            <div className="row">
-                              <span className="badge used">
-                                {label==='other-round'?`In Round ${roundNumber}`:label==='final'?'In Grand Final':'Used'}
-                              </span>
-                            </div>
-                            <strong>{x.stem}</strong>
-                            <small style={{color:'#6b7280'}}>Cannot add here until removed from that set</small>
-                          </div>
-                        ))}
-                      </>
-                    )}
-                  </>
-                )}
-              </>
-            )}
+              );
+            })}
           </>
         )}
 
         {tab==='final'&&(
           <>
-            <div className="actions" style={{marginBottom:14}}>
-              <strong>{finalQ.length} / 10</strong>
-              <button className="btn primary" disabled={finalQ.length!==10} onClick={validateFinal}>Validate Final</button>
+            <div className="actions" style={{marginBottom:12}}>
+              <strong>{finalQ.length}/10</strong>
+              <button className="btn primary" disabled={finalQ.length!==10} onClick={validateFinal}>Validate</button>
             </div>
-            {finalQ.map(x=>{
-              const qq=q.find(y=>y.id===x.question_id);
+            {finalQ.map(f=>{
+              const qq=q.find(x=>x.id===f.question_id);
               return (
-                <div className="slot filled" key={x.question_id}>
-                  <header><div className="num">{x.canonical_order}</div><button className="btn danger" onClick={()=>removeFinal(x.question_id)}>Remove</button></header>
-                  <strong style={{fontSize:14}}>{qq?.stem??x.question_id}</strong>
+                <div key={f.question_id} className="slot-row">
+                  <div className="order-badge">{f.canonical_order}</div>
+                  <div className="q-tile" style={{cursor:'default'}}>
+                    <strong>{qq?.stem??f.question_id}</strong>
+                    <div className="tile-actions"><button className="btn sm danger" onClick={()=>removeFinal(f.question_id)}>Remove</button></div>
+                  </div>
                 </div>
               );
             })}
-            {finalQ.length<10&&(
-              <>
-                <div className="section-title">Add to final</div>
-                {q.filter(x=>x.status==='approved'&&!finalQ.some(f=>f.question_id===x.id)&&!usageByQuestion.has(x.id)).map(x=>(
-                  <div className="avail-card" key={x.id}>
-                    <strong>{x.stem}</strong>
-                    <button type="button" className="btn primary" onClick={()=>addFinal(x.id)}>Add to Final</button>
-                  </div>
-                ))}
-              </>
-            )}
+            <h3 style={{marginTop:16,fontSize:14}}>Add from unassigned</h3>
+            {pool.map(x=>(
+              <div key={x.id} className="q-tile" style={{marginBottom:8,cursor:'default'}}>
+                <strong>{x.stem}</strong>
+                <div className="tile-actions"><button className="btn sm primary" onClick={()=>addFinal(x.id)}>Add to Final</button></div>
+              </div>
+            ))}
           </>
         )}
       </div></div>
 
-      {tab==='bank'&&<button className="fab" onClick={openCreate}>+</button>}
+      {(tab==='bank'||tab==='organize')&&<button className="fab" onClick={openCreate}>+</button>}
 
       {modal&&(
         <div className="overlay" onClick={e=>{if(e.target===e.currentTarget)setModal(null)}}>
           <div className="modal">
-            <div className="close-row"><h2>{modal==='create'?'New question':'Edit question'}</h2><button className="btn" onClick={()=>setModal(null)}>Close</button></div>
-            {modal==='create'&&(
-              <><label>AI topic</label><div className="row2"><input value={aiTopic} onChange={e=>setAiTopic(e.target.value)}/><button className="btn" disabled={busy||!aiTopic.trim()} onClick={generate}>Generate</button></div></>
-            )}
+            <div className="close-row"><h2>{modal==='create'?'New':'Edit'}</h2><button className="btn" onClick={()=>setModal(null)}>Close</button></div>
+            {modal==='create'&&<><label>AI topic</label><div className="row2"><input value={aiTopic} onChange={e=>setAiTopic(e.target.value)}/><button className="btn" disabled={busy||!aiTopic.trim()} onClick={generate}>Generate</button></div></>}
             {formFields}
             <div className="modal-actions">
-              <button className="btn primary" disabled={busy} onClick={modal==='create'?saveCreate:saveEdit}>{busy?'Saving…':modal==='create'?'Save draft':'Save'}</button>
-              <button className="btn" onClick={()=>setModal(null)}>Cancel</button>
+              <button className="btn primary" disabled={busy} onClick={modal==='create'?saveCreate:saveEdit}>{busy?'…':'Save'}</button>
             </div>
           </div>
         </div>
