@@ -77,7 +77,6 @@ function normalizeBoard(rows:Board[]|Record<string,unknown>[]){
   });
 }
 
-/** Enrich board with round_score, total_score, prev_rank, rank_delta for projector */
 function enrichBoard(
   base:Board[],
   attempts:Attempt[],
@@ -148,6 +147,115 @@ function movementLabel(delta:number|null|undefined,prev:number|null|undefined){
   return `▼${Math.abs(delta)}`;
 }
 
+type HallState={
+  state:string;
+  title?:string|null;
+  question?:string|null;
+  answer?:string|null;
+  explanation?:string|null;
+  options?:unknown;
+  top10?:unknown;
+  round_number?:number|null;
+};
+
+function hallOpts(value:unknown):{key:string;text:string;correct?:boolean}[]{
+  if(!Array.isArray(value))return [];
+  return value.map((x,i)=>{
+    if(typeof x==='string')return{key:String.fromCharCode(65+i),text:x};
+    const o=(x&&typeof x==='object'?x:{}) as Record<string,unknown>;
+    return{
+      key:String(o.key??o.option_key??String.fromCharCode(65+i)),
+      text:String(o.text??o.option_text??o.label??''),
+      correct:!!(o.correct??o.is_correct),
+    };
+  });
+}
+
+function hallBoard(value:unknown){
+  const rows=Array.isArray(value)?value:[];
+  return rows.slice(0,10).map((row,i)=>{
+    const r=(row&&typeof row==='object'?row:{}) as Record<string,unknown>;
+    const rank=Number(r.rank??i+1)||i+1;
+    const prev=r.prev_rank!=null?Number(r.prev_rank):null;
+    const delta=r.rank_delta!=null?Number(r.rank_delta):(prev!=null?prev-rank:null);
+    return{
+      rank,
+      name:String(r.display_name??r.name??'Participant').trim()||'Participant',
+      total:Number(r.total_score??r.score??0)||0,
+      round:r.round_score!=null?Number(r.round_score):undefined,
+      prev_rank:prev,
+      rank_delta:delta,
+    };
+  });
+}
+
+function HallPreview({view}:{view:HallState|null}){
+  if(!view){
+    return (
+      <div className="hall-preview">
+        <p className="hp-sub">No presentation state yet — publish a screen</p>
+      </div>
+    );
+  }
+  const opts=hallOpts(view.options);
+  const board=hallBoard(view.top10);
+  const st=view.state||'WAITING';
+
+  let body:React.ReactNode=null;
+  if(st==='RULES'){
+    body=<><div className="hp-kicker">Rules</div><h3 className="hp-title">How to play</h3><p className="hp-sub">Answer on your device before the timer ends</p></>;
+  }else if(st==='QUESTION'){
+    body=<><div className="hp-kicker">{opts.length?'Question':'Live'}</div>
+      <h3 className="hp-title" style={{whiteSpace:'pre-line'}}>{view.question||view.title||'Round live'}</h3>
+      {opts.length>0&&<div className="hp-opts">{opts.map((o,i)=><div key={i} className="hp-opt"><b>{o.key}</b> {o.text}</div>)}</div>}
+      {!opts.length&&<p className="hp-sub">Answer on devices</p>}
+    </>;
+  }else if(st==='ANSWER_REVEAL'){
+    body=<><div className="hp-kicker green">Review</div>
+      <h3 className="hp-title">{view.question}</h3>
+      <div className="hp-opts">{opts.map((o,i)=><div key={i} className={'hp-opt'+(o.correct?' ok':'')}>{o.key}. {o.text}</div>)}</div>
+      {view.answer&&<p className="hp-sub" style={{marginTop:10}}>Correct: {view.answer}</p>}
+    </>;
+  }else if(st==='ROUND_TOP10'||st==='LEADERBOARD'){
+    body=<>
+      <div className="hp-kicker gold">{st==='ROUND_TOP10'?'Round top 10':'Overall'}</div>
+      <h3 className="hp-title">{view.title||'Leaderboard'}</h3>
+      <div className="hp-board">
+        {board.map(b=>{
+          const podium=b.rank===1?' top':b.rank===2?' top2':b.rank===3?' top3':'';
+          const mv=movementLabel(b.rank_delta,b.prev_rank);
+          const mvCls=b.rank_delta==null&&b.prev_rank==null?' new':(b.rank_delta&&b.rank_delta>0?' up':b.rank_delta&&b.rank_delta<0?' down':'');
+          return (
+            <div className={'hp-br'+podium} key={b.rank}>
+              <b className="hp-rank">#{b.rank}</b>
+              <span className="hp-name">{b.name}</span>
+              <span className={'hp-mv'+mvCls}>{mv}</span>
+              <span className="hp-scores">
+                {b.round!=null&&<em className="hp-round">+{b.round}</em>}
+                <strong>{b.total}</strong>
+              </span>
+            </div>
+          );
+        })}
+        {!board.length&&<p className="hp-sub">No rows</p>}
+      </div>
+    </>;
+  }else if(st==='FINAL'){
+    body=<><div className="hp-kicker">Grand Final</div><h3 className="hp-title">{view.title||view.question||'Final'}</h3></>;
+  }else if(st==='WINNER'){
+    body=<><div className="hp-kicker gold">Champion</div><h3 className="hp-title">{view.title||'Congratulations!'}</h3></>;
+  }else{
+    body=<><div className="hp-kicker">GERiCARE</div><h3 className="hp-title">{view.title||'Quiz will begin shortly'}</h3><p className="hp-sub">Waiting</p></>;
+  }
+
+  return (
+    <div className="hall-preview">
+      <span className="hp-live">HALL · LIVE</span>
+      <div className="hp-inner">{body}</div>
+    </div>
+  );
+}
+
 function App(){
   const[tab,setTab]=useState<Tab>('rounds');
   const[eventId,setEventId]=useState('');
@@ -159,6 +267,7 @@ function App(){
   const[finalists,setFinalists]=useState<Finalist[]>([]);
   const[sudden,setSudden]=useState<Sudden|null>(null);
   const[suddenQuestion,setSuddenQuestion]=useState('');
+  const[hallView,setHallView]=useState<HallState|null>(null);
   const[selected,setSelected]=useState<Round|null>(null);
   const[message,setMessage]=useState('Ready');
   const[msgKind,setMsgKind]=useState<'ok'|'err'|'info'>('info');
@@ -274,6 +383,19 @@ function App(){
   },[locked]);
 
   useEffect(()=>{if(selected)void loadRoundQuestions(selected.id).catch(e=>{setMessage(errText(e));setMsgKind('err')})},[selected?.id]);
+
+  useEffect(()=>{
+    if(!supabase)return;
+    const loadHall=async()=>{
+      const {data}=await supabase.from('presentation_state').select('state,title,question,answer,explanation,options,top10,round_number').order('updated_at',{ascending:false}).limit(1).maybeSingle();
+      if(data)setHallView(data as HallState);
+    };
+    void loadHall();
+    const ch=supabase.channel('control-hall-preview')
+      .on('postgres_changes',{event:'*',schema:'public',table:'presentation_state'},p=>{if(p.new)setHallView(p.new as HallState)})
+      .subscribe();
+    return()=>{supabase.removeChannel(ch)};
+  },[]);
 
   const boardForPublish=(roundId?:string|null)=>{
     return enrichBoard(boardRef.current,attemptsRef.current,roundId??selected?.id,prevRanksRef.current);
@@ -520,6 +642,15 @@ function App(){
 
         {tab==='projector'&&(
           <>
+            <section className="section">
+              <h3>Hall screen · live preview</h3>
+              <HallPreview view={hallView}/>
+              <div className="hall-meta">
+                <span>State: {hallView?.state??'—'}</span>
+                <span>What the projector app shows now</span>
+              </div>
+            </section>
+
             <section className="section">
               <h3>Show settings</h3>
               <div className="actions" style={{marginBottom:10}}>
