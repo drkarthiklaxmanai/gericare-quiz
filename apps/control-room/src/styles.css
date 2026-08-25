@@ -94,52 +94,78 @@ body{margin:0;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#e
 }
 .play-row.on{background:#e0f2fe}
 
-/* Hall screen preview */
+/* —— Hall Preview (projector-like) —— */
 .hall-preview{
-  background:#050b14;
-  color:#f8fafc;
-  border-radius:14px;
-  overflow:hidden;
-  border:1px solid #1e293b;
-  aspect-ratio:16/10;
-  max-height:280px;
+  background:linear-gradient(160deg,#07101d 0%,#0c1a2e 100%);
+  color:#fff;
+  border-radius:16px;
+  padding:18px 16px 16px;
   position:relative;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  padding:16px;
-  text-align:center;
+  min-height:220px;
+  overflow:hidden;
+  box-shadow:inset 0 0 0 1px #1e3a5f,0 8px 24px #0f172a33;
 }
-.hall-preview .hp-live{
-  position:absolute;top:8px;right:10px;
-  font-size:9px;font-weight:800;letter-spacing:.12em;
-  color:#86efac;opacity:.85;
+.hp-live{
+  position:absolute;top:10px;right:12px;
+  font-size:10px;font-weight:900;letter-spacing:.14em;
+  color:#38bdf8;opacity:.9;
 }
-.hall-preview .hp-kicker{
-  font-size:10px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;
-  color:#38bdf8;margin-bottom:6px;
+.hp-inner{width:100%;padding-top:6px}
+.hp-kicker{
+  font-size:11px;font-weight:900;letter-spacing:.16em;
+  text-transform:uppercase;opacity:.7;margin-bottom:6px;
 }
-.hall-preview .hp-kicker.gold{color:#fbbf24}
-.hall-preview .hp-kicker.green{color:#4ade80}
-.hall-preview h4{
-  margin:0 0 6px;font-size:15px;font-weight:800;line-height:1.25;
-  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;
+.hp-kicker.gold{color:#fbbf24;opacity:1}
+.hp-kicker.green{color:#34d399;opacity:1}
+.hp-title{
+  margin:0 0 12px;font-size:clamp(18px,4.2vw,26px);
+  font-weight:800;line-height:1.2;letter-spacing:-.02em;
 }
-.hall-preview .hp-sub{font-size:11px;color:#94a3b8;margin:0}
-.hall-preview .hp-opts{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px;text-align:left;width:100%}
-.hall-preview .hp-opt{
-  font-size:10px;padding:6px 8px;border-radius:8px;
-  background:rgba(30,41,59,.8);border:1px solid #334155;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+.hp-sub{margin:0;font-size:13px;opacity:.65}
+.hp-opts{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.hp-opt{
+  background:#132337;border:1px solid #243b55;border-radius:10px;
+  padding:10px 12px;font-size:14px;display:flex;align-items:center;gap:10px;
 }
-.hall-preview .hp-opt.ok{border-color:#4ade80;background:rgba(22,101,52,.4)}
-.hall-preview .hp-board{width:100%;margin-top:8px;text-align:left}
-.hall-preview .hp-br{
-  display:grid;grid-template-columns:28px 1fr 36px;gap:4px;
-  font-size:10px;padding:3px 0;border-bottom:1px solid #1e293b;
+.hp-opt b{
+  display:inline-flex;width:28px;height:28px;border-radius:50%;
+  align-items:center;justify-content:center;background:#1e3a5f;
+  font-size:12px;flex-shrink:0;
 }
-.hall-preview .hp-br b{color:#94a3b8}
+.hp-opt.ok{border-color:#34d399;background:#0d2a22}
+.hp-opt.ok b{background:#059669}
+
+.hp-board{display:flex;flex-direction:column;gap:4px;margin-top:4px}
+.hp-br{
+  display:grid;
+  grid-template-columns:42px 1fr 48px auto;
+  align-items:center;gap:8px;
+  padding:8px 10px;border-radius:10px;
+  background:#0f1c2e;border:1px solid #1e2f45;
+  font-size:13px;
+}
+.hp-br.top{background:linear-gradient(90deg,#3b2f0a 0%,#1a1405 100%);border-color:#b45309}
+.hp-br.top2{background:linear-gradient(90deg,#1e293b 0%,#0f172a 100%);border-color:#64748b}
+.hp-br.top3{background:linear-gradient(90deg,#3b1f0a 0%,#1a0f05 100%);border-color:#92400e}
+.hp-rank{font-weight:900;font-size:14px;color:#94a3b8}
+.hp-br.top .hp-rank{color:#fbbf24}
+.hp-br.top2 .hp-rank{color:#e2e8f0}
+.hp-br.top3 .hp-rank{color:#fb923c}
+.hp-name{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hp-mv{font-size:11px;font-weight:800;text-align:center;min-width:36px}
+.hp-mv.up{color:#34d399}
+.hp-mv.down{color:#f87171}
+.hp-mv.new{color:#38bdf8}
+.hp-scores{display:flex;align-items:baseline;gap:6px;justify-content:flex-end}
+.hp-round{font-style:normal;font-size:11px;font-weight:700;color:#94a3b8}
+.hp-scores strong{font-size:15px;font-weight:800}
+
 .hall-meta{
   display:flex;justify-content:space-between;align-items:center;
   margin-top:8px;font-size:11px;color:#64748b;font-weight:700;
+}
+
+@media(max-width:480px){
+  .hp-br{grid-template-columns:36px 1fr 40px auto;padding:7px 8px;font-size:12px}
+  .hp-title{font-size:18px}
 }
