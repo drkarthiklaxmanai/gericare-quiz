@@ -21,7 +21,7 @@ function renderOtp(email:string,message=`We sent a 6-digit verification code to 
 }
 function addSignOut(){const b=document.createElement('button');b.textContent='Sign out';b.style.cssText='position:fixed;right:14px;bottom:14px;z-index:9999;border:1px solid #d8dee8;background:white;border-radius:10px;padding:9px 12px;font-weight:700;box-shadow:0 4px 18px rgba(15,23,42,.12)';b.onclick=async()=>{await supabase.auth.signOut();location.reload()};document.body.appendChild(b)}
 
-if(!url||!key){shell('Control Room','<p>Supabase environment is not configured.</p>');throw new Error('Supabase environment not configured')}
+if(!url||!key){shell('Control Room','<p>Supabase environment is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then redeploy.</p>');throw new Error('Supabase environment not configured')}
 const supabase=createClient(url,key);
 
 async function authorize(){
