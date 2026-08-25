@@ -1,6 +1,6 @@
 # Admin / Question Editor
 
-Administrative surface for GERiCARE Quiz.
+Administrative surface for GeriCare Quiz.
 
 ## Current capabilities
 
