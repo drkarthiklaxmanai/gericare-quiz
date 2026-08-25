@@ -1,4 +1,4 @@
-# GERiCARE deployment architecture
+# GeriCare deployment architecture
 
 Production uses one GitHub monorepo, one Netlify site, and one Supabase project.
 
