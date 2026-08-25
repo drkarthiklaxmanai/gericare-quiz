@@ -108,7 +108,6 @@ function App(){
     return()=>{supabase.removeChannel(ch)};
   },[eventId]);
 
-  // Renew control lock while LIVE CONTROL is held (server TTL is short).
   useEffect(()=>{
     if(!locked||!lockEventRef.current)return;
     const eid=lockEventRef.current;
@@ -187,112 +186,124 @@ function App(){
   };
   const openRound=rounds.find(r=>r.status==='open');
 
-  return <div className="shell">
-    <header>
-      <div>
-        <div className="eyebrow">GERiCARE • LIVE OPERATIONS</div>
-        <h1>Control Room</h1>
-      </div>
-      <div className={locked?'lock on':'lock'}>{locked?'● LIVE CONTROL':'○ VIEW ONLY'}</div>
-    </header>
-    <main>
-      <section className="hero">
+  return (
+    <div className="shell">
+      <header>
         <div>
-          <span className="label">CURRENT ROUND</span>
-          <h2>{active?`Round ${active.round_number} — ${active.title}`:'No active round'}</h2>
-          <p>{message}</p>
-          {active&&<
-            <p className="muted" style={{marginTop:6}}>
-              Status: {active.status} · Questions locked: {active.questions_locked?'yes':'no'}
-              {openRound&&openRound.id!==active.id?` · Open now: R${openRound.round_number}`:''}
-            </p>
-          }
+          <div className="eyebrow">GERiCARE • LIVE OPERATIONS</div>
+          <h1>Control Room</h1>
         </div>
-        <div className="actions">{active&&<>
-          <button onClick={()=>control(active)}>Take Control</button>
-          <button onClick={()=>open(active)}>Open</button>
-          <button onClick={()=>close(active)}>Close</button>
-          <button onClick={()=>release(active)}>Release Results</button>
-        </>}</div>
-      </section>
-
-      <section className="panel" style={{marginTop:18}}>
-        <h3>Projector</h3>
-        <div className="actions">
-          <button onClick={()=>present('WAITING')}>Waiting</button>
-          <button onClick={()=>present('RULES',{p_title:'How to Play'})}>Rules</button>
-          <button onClick={()=>present('ROUND_TOP10')}>Round Top 10</button>
-          <button onClick={()=>present('LEADERBOARD')}>Overall Leaderboard</button>
-          <button onClick={()=>present('FINAL',{p_title:'Grand Final'})}>Final</button>
-          <button onClick={()=>present('WINNER')}>Winner</button>
-        </div>
-      </section>
-
-      <section className="panel" style={{marginTop:18}}>
-        <h3>Grand Final Operations</h3>
-        <div className="actions">
-          <button onClick={qualify}>Qualify Top 10</button>
-          <button onClick={startFinal}>Start Final</button>
-          <button onClick={finalBoard}>Build Final Leaderboard</button>
-          <button onClick={complete}>Complete Event</button>
-        </div>
-        <div className="stats" style={{marginTop:14}}>
-          <div><b>{finalists.length}</b><span>Finalists</span></div>
-          <div><b>{finalists.filter(f=>f.status==='completed'||f.status==='ranked').length}</b><span>Finished</span></div>
-        </div>
-        <div className="table">{finalists.slice(0,10).map(f=>
-          <div className="tr" key={f.id}><b>#{f.rank}</b><strong>{f.participant_id.slice(0,8)}</strong><span>{f.preliminary_score} prelim</span></div>
-        )}</div>
-        <h3 style={{marginTop:20}}>Sudden Death</h3>
-        <div className="actions">
-          <input value={suddenQuestion} onChange={e=>setSuddenQuestion(e.target.value)} placeholder="Prepared question UUID"/>
-          <button onClick={startSudden}>Start Question</button>
-          <button disabled={!sudden} onClick={resolveSudden}>Resolve Current</button>
-        </div>
-        {sudden&&<p className="muted">Current sudden-death question #{sudden.question_number} · {sudden.question_id}</p>}
-      </section>
-
-      <section className="grid">
-        <div className="panel rounds">
-          <h3>Rounds</h3>
-          {rounds.map(r=>
-            <button className={'row '+(selected?.id===r.id?'selected':'')} key={r.id} onClick={()=>setSelected(r)}>
-              <span>R{r.round_number}</span>
-              <strong>{r.title}</strong>
-              <em>{r.status}{r.questions_locked?' · locked':''}</em>
-            </button>
-          )}
-          {!rounds.length&&<p className="muted">No rounds configured.</p>}
-        </div>
-        <div className="panel">
-          <h3>Participant Monitor</h3>
-          <div className="stats">
-            <div><b>{counts.active}</b><span>Active</span></div>
-            <div><b>{counts.submitted}</b><span>Submitted</span></div>
-            <div><b>{counts.terminated}</b><span>Terminated</span></div>
+        <div className={locked?'lock on':'lock'}>{locked?'● LIVE CONTROL':'○ VIEW ONLY'}</div>
+      </header>
+      <main>
+        <section className="hero">
+          <div>
+            <span className="label">CURRENT ROUND</span>
+            <h2>{active?`Round ${active.round_number} — ${active.title}`:'No active round'}</h2>
+            <p>{message}</p>
+            {active && (
+              <p className="muted" style={{marginTop:6}}>
+                Status: {active.status} · Questions locked: {active.questions_locked?'yes':'no'}
+                {openRound&&openRound.id!==active.id?` · Open now: R${openRound.round_number}`:''}
+              </p>
+            )}
           </div>
-          <div className="table">{currentAttempts.slice(0,12).map(a=>
-            <div className="tr" key={a.id}><span>{a.participant_id.slice(0,8)}</span><strong>{a.status}</strong><span>{a.score} pts</span></div>
-          )}</div>
-        </div>
-        <div className="panel">
-          <h3>Leaderboard</h3>
-          {board.length?
-            <div className="table">{board.slice(0,10).map((b,i)=>
-              <div className="tr" key={b.participant_id??i}><b>#{b.rank??i+1}</b><strong>{b.display_name??b.name??'Participant'}</strong><span>{b.score}</span></div>
-            )}</div>
-            :<p className="muted">Released leaderboard snapshots will appear here.</p>}
-        </div>
-        <div className="panel">
-          <h3>Integrity Monitor</h3>
-          {integrity.slice(0,10).map(x=>
-            <div className="tr" key={x.id}><span>{new Date(x.occurred_at).toLocaleTimeString()}</span><strong>{x.event}</strong><span>{x.participant_id?.slice(0,8)??'—'}</span></div>
-          )}
-          {!integrity.length&&<p className="muted">No integrity events.</p>}
-        </div>
-      </section>
-    </main>
-  </div>;
+          <div className="actions">
+            {active && (
+              <>
+                <button onClick={()=>control(active)}>Take Control</button>
+                <button onClick={()=>open(active)}>Open</button>
+                <button onClick={()=>close(active)}>Close</button>
+                <button onClick={()=>release(active)}>Release Results</button>
+              </>
+            )}
+          </div>
+        </section>
+
+        <section className="panel" style={{marginTop:18}}>
+          <h3>Projector</h3>
+          <div className="actions">
+            <button onClick={()=>present('WAITING')}>Waiting</button>
+            <button onClick={()=>present('RULES',{p_title:'How to Play'})}>Rules</button>
+            <button onClick={()=>present('ROUND_TOP10')}>Round Top 10</button>
+            <button onClick={()=>present('LEADERBOARD')}>Overall Leaderboard</button>
+            <button onClick={()=>present('FINAL',{p_title:'Grand Final'})}>Final</button>
+            <button onClick={()=>present('WINNER')}>Winner</button>
+          </div>
+        </section>
+
+        <section className="panel" style={{marginTop:18}}>
+          <h3>Grand Final Operations</h3>
+          <div className="actions">
+            <button onClick={qualify}>Qualify Top 10</button>
+            <button onClick={startFinal}>Start Final</button>
+            <button onClick={finalBoard}>Build Final Leaderboard</button>
+            <button onClick={complete}>Complete Event</button>
+          </div>
+          <div className="stats" style={{marginTop:14}}>
+            <div><b>{finalists.length}</b><span>Finalists</span></div>
+            <div><b>{finalists.filter(f=>f.status==='completed'||f.status==='ranked').length}</b><span>Finished</span></div>
+          </div>
+          <div className="table">
+            {finalists.slice(0,10).map(f=>(
+              <div className="tr" key={f.id}><b>#{f.rank}</b><strong>{f.participant_id.slice(0,8)}</strong><span>{f.preliminary_score} prelim</span></div>
+            ))}
+          </div>
+          <h3 style={{marginTop:20}}>Sudden Death</h3>
+          <div className="actions">
+            <input value={suddenQuestion} onChange={e=>setSuddenQuestion(e.target.value)} placeholder="Prepared question UUID"/>
+            <button onClick={startSudden}>Start Question</button>
+            <button disabled={!sudden} onClick={resolveSudden}>Resolve Current</button>
+          </div>
+          {sudden&&<p className="muted">Current sudden-death question #{sudden.question_number} · {sudden.question_id}</p>}
+        </section>
+
+        <section className="grid">
+          <div className="panel rounds">
+            <h3>Rounds</h3>
+            {rounds.map(r=>(
+              <button className={'row '+(selected?.id===r.id?'selected':'')} key={r.id} onClick={()=>setSelected(r)}>
+                <span>R{r.round_number}</span>
+                <strong>{r.title}</strong>
+                <em>{r.status}{r.questions_locked?' · locked':''}</em>
+              </button>
+            ))}
+            {!rounds.length&&<p className="muted">No rounds configured.</p>}
+          </div>
+          <div className="panel">
+            <h3>Participant Monitor</h3>
+            <div className="stats">
+              <div><b>{counts.active}</b><span>Active</span></div>
+              <div><b>{counts.submitted}</b><span>Submitted</span></div>
+              <div><b>{counts.terminated}</b><span>Terminated</span></div>
+            </div>
+            <div className="table">
+              {currentAttempts.slice(0,12).map(a=>(
+                <div className="tr" key={a.id}><span>{a.participant_id.slice(0,8)}</span><strong>{a.status}</strong><span>{a.score} pts</span></div>
+              ))}
+            </div>
+          </div>
+          <div className="panel">
+            <h3>Leaderboard</h3>
+            {board.length?
+              <div className="table">
+                {board.slice(0,10).map((b,i)=>(
+                  <div className="tr" key={b.participant_id??i}><b>#{b.rank??i+1}</b><strong>{b.display_name??b.name??'Participant'}</strong><span>{b.score}</span></div>
+                ))}
+              </div>
+              :<p className="muted">Released leaderboard snapshots will appear here.</p>}
+          </div>
+          <div className="panel">
+            <h3>Integrity Monitor</h3>
+            {integrity.slice(0,10).map(x=>(
+              <div className="tr" key={x.id}><span>{new Date(x.occurred_at).toLocaleTimeString()}</span><strong>{x.event}</strong><span>{x.participant_id?.slice(0,8)??'—'}</span></div>
+            ))}
+            {!integrity.length&&<p className="muted">No integrity events.</p>}
+          </div>
+        </section>
+      </main>
+    </div>
+  );
 }
 
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);
