@@ -1,4 +1,4 @@
-# Initial GERiCARE question bank
+# Initial GeriCare question bank
 
 Production seed created for rehearsal on 2026-08-24.
 
