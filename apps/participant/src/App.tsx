@@ -15,6 +15,7 @@ type AttemptSummary={round_id:string;status:string;score:number;result_released_
 type ReviewOpt={key:string;text:string;correct:boolean}
 type HistoryItem={
   id:string
+  round_id?:string
   status:string
   score:number|null
   result_released_at:string|null
@@ -55,8 +56,12 @@ function isReleased(a:AttemptSummary|undefined):boolean{
 export default function App(){
  const[screen,setScreen]=useState<Screen>('auth'),[session,setSession]=useState<Session|null>(null),[event,setEvent]=useState<EventInfo|null>(null),[participant,setParticipant]=useState<Participant|null>(null)
  const[email,setEmail]=useState(''),[otp,setOtp]=useState(''),[displayName,setDisplayName]=useState(''),[attempt,setAttempt]=useState<Attempt|null>(null),[current,setCurrent]=useState(0),[answers,setAnswers]=useState<Record<string,string>>({}),[remaining,setRemaining]=useState(600),[message,setMessage]=useState(''),[busy,setBusy]=useState(false)
- const[rounds,setRounds]=useState<Round[]>([]),[roundAttempts,setRoundAttempts]=useState<AttemptSummary[]>([]),[history,setHistory]=useState<HistoryItem[]>([]),[leaderboard,setLeaderboard]=useState<any>(null)
+ const[rounds,setRounds]=useState<Round[]>([]),[roundAttempts,setRoundAttempts]=useState<AttemptSummary[]>([]),[history,setHistory]=useState<HistoryItem[]>([]),[historyRoundId,setHistoryRoundId]=useState<string|null>(null),[leaderboard,setLeaderboard]=useState<any>(null)
  const questions=useMemo(()=>attempt?.questions??[],[attempt])
+ const visibleHistory=useMemo(()=>{
+   if(!historyRoundId)return history
+   return history.filter(h=>h.round_id===historyRoundId)
+ },[history,historyRoundId])
  useEffect(()=>{if(!supabase){setScreen('home');setMessage('Demo mode: Supabase is not configured.');return}void supabase.auth.getSession().then(({data})=>{setSession(data.session);if(data.session)void bootstrap()});const{data:l}=supabase.auth.onAuthStateChange((_e,next)=>{setSession(next);if(next)void bootstrap()});return()=>l.subscription.unsubscribe()},[])
  async function bootstrap(){if(!supabase)return;setBusy(true);setMessage('');try{const configured=import.meta.env.VITE_EVENT_ID as string|undefined;let query=supabase.from('events').select('id,name,status,registration_open');if(configured)query=query.eq('id',configured);const{data:ev,error:ee}=await query.limit(1).maybeSingle();if(ee)throw ee;if(!ev)throw Error('No accessible conference event');setEvent(ev);const{data:ep,error:pe}=await supabase.from('event_participants').select('id,event_id,display_name').eq('event_id',ev.id).maybeSingle();if(pe)throw pe;if(ep){setParticipant(ep);setScreen('home');await loadHome(ev.id)}else setScreen('register')}catch(e){setMessage(errText(e))}finally{setBusy(false)}}
  async function loadHome(eventId=event?.id){if(!eventId)return;const r=await quizApi.availableRounds(eventId);if(r.error){setMessage(errText(r.error));return}const d=r.data as any;setRounds(d?.rounds??[]);setRoundAttempts(d?.attempts??[])}
@@ -73,7 +78,8 @@ export default function App(){
  async function start(round:Round){if(!event)return;setBusy(true);setMessage('');const r=await quizApi.startRound(event.id,round.id);setBusy(false);if(r.error){setMessage(errText(r.error));return}const a=r.data as Attempt;setAttempt(a);setCurrent(0);setAnswers({});setRemaining(Math.max(0,Math.ceil((new Date(a.deadline_at).getTime()-Date.now())/1000)));setScreen('quiz')}
  async function choose(optionKey:string){const q=questions[current];setAnswers(v=>({...v,[q.id]:optionKey}));if(attempt){const r=await quizApi.answer(attempt.id,q.id,optionKey);if(r.error)setMessage(errText(r.error))}}
  async function finish(){if(attempt)await quizApi.finishRound(attempt.id);setScreen('submitted');if(event)await loadHome(event.id)}
- async function showHistory(){if(!event)return;setBusy(true);const r=await quizApi.history(event.id);setBusy(false);if(r.error){setMessage(errText(r.error));return}setHistory((r.data as any)?.attempts??[]);setScreen('history')}
+ /** @param roundId — if set, only that round's review is shown */
+ async function showHistory(roundId?:string){if(!event)return;setBusy(true);const r=await quizApi.history(event.id);setBusy(false);if(r.error){setMessage(errText(r.error));return}setHistory((r.data as any)?.attempts??[]);setHistoryRoundId(roundId??null);setScreen('history')}
  async function showLeaderboard(){if(!event)return;setBusy(true);const r=await quizApi.leaderboard(event.id);setBusy(false);if(r.error){setMessage(errText(r.error));return}setLeaderboard((r.data as any)?.snapshot??null);setScreen('leaderboard')}
  async function signOut(){if(supabase)await supabase.auth.signOut();setSession(null);setParticipant(null);setOtp('');setScreen('auth')}
  const q=questions[current],mins=Math.floor(remaining/60).toString().padStart(2,'0'),secs=(remaining%60).toString().padStart(2,'0')
@@ -83,11 +89,12 @@ export default function App(){
    return Array.isArray(p)?p:[]
  })()
  const releasedRoundCount=rounds.filter(r=>r.results_released).length
+ const filterRound=historyRoundId?rounds.find(r=>r.id===historyRoundId):null
  return <main className="shell"><header><div className="brand">GERiCARE <span>QUIZ</span></div><div className="badge">CONFERENCE</div></header>
  {screen==='auth'&&<section className="card hero"><p className="eyebrow">PARTICIPANT SIGN IN</p><h1>Join the conference quiz</h1><input className="field" type="email" placeholder="you@example.com" value={email} onChange={e=>setEmail(e.target.value)}/>{message&&<div className="notice">{message}</div>}<button disabled={busy||!email.includes('@')} onClick={sendOtp}>{busy?'Sending…':'Email me a 6-digit code'}</button></section>}
  {screen==='otp'&&<section className="card hero"><p className="eyebrow">VERIFICATION</p><h1>Enter your code</h1><p>We sent a 6-digit code to <b>{email}</b>.</p><input className="field" inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="6-digit code" value={otp} onChange={e=>setOtp(e.target.value.replace(/\D/g,'').slice(0,6))}/>{message&&<div className="notice">{message}</div>}<button disabled={busy||otp.length!==6} onClick={verifyOtp}>{busy?'Verifying…':'Verify and sign in'}</button><button className="secondary" disabled={busy} onClick={()=>{setScreen('auth');setOtp('');setMessage('')}}>Use a different email</button></section>}
  {screen==='register'&&<section className="card hero"><p className="eyebrow">REGISTRATION</p><h1>{event?.name??'GERiCARE Conference Quiz'}</h1><p>Choose the name that should appear on the leaderboard.</p><input className="field" placeholder="Display name" value={displayName} onChange={e=>setDisplayName(e.target.value)}/>{message&&<div className="notice">{message}</div>}<button disabled={busy||displayName.trim().length<2} onClick={register}>Complete Registration</button></section>}
- {screen==='home'&&<><section className="card hero"><p className="eyebrow">PARTICIPANT</p><h1>Welcome{participant?.display_name?`, ${participant.display_name}`:''}</h1><p>Your 10-minute timer starts independently when you press Start.</p>{message&&<div className="notice">{message}</div>}<div className="nav"><button onClick={showHistory}>My Quiz{releasedRoundCount>0?` · ${releasedRoundCount} review${releasedRoundCount>1?'s':''}`:''}</button><button className="secondary" onClick={showLeaderboard}>Leaderboard</button></div></section>{event&&<FinalPanel eventId={event.id}/>}<section className="roundList">{rounds.map(r=>{
+ {screen==='home'&&<><section className="card hero"><p className="eyebrow">PARTICIPANT</p><h1>Welcome{participant?.display_name?`, ${participant.display_name}`:''}</h1><p>Your 10-minute timer starts independently when you press Start.</p>{message&&<div className="notice">{message}</div>}<div className="nav"><button onClick={()=>void showHistory()}>My Quiz{releasedRoundCount>0?` · ${releasedRoundCount} review${releasedRoundCount>1?'s':''}`:''}</button><button className="secondary" onClick={showLeaderboard}>Leaderboard</button></div></section>{event&&<FinalPanel eventId={event.id}/>}<section className="roundList">{rounds.map(r=>{
    const a=attemptFor(r.id)
    const canStart=r.status==='open'&&!a
    const mineReleased=isReleased(a)
@@ -101,19 +108,27 @@ export default function App(){
    else if(a)statusText=`Status: ${a.status}`
    return <div className="card roundCard" key={r.id}><div><p className="eyebrow">ROUND {r.round_number}{r.is_optional?' · OPTIONAL':''}</p><h3>{r.title}</h3><p>{statusText}</p></div>{
      roundReleased
-       ? <button onClick={showHistory}>View review</button>
+       ? <button onClick={()=>void showHistory(r.id)}>View review</button>
        : <button disabled={!canStart||busy} onClick={()=>start(r)}>{pending?'Waiting for release':canStart?'Start':'Unavailable'}</button>
    }</div>
  })}</section>{session&&<button className="secondary standalone" onClick={signOut}>Sign out</button>}</>}
  {screen==='quiz'&&q&&<section className="card"><div className="quizTop"><span>Question {current+1} of {questions.length}</span><strong>{mins}:{secs}</strong></div><div className="progress"><i style={{width:`${((current+1)/questions.length)*100}%`}}/></div><p className="eyebrow">SINGLE BEST ANSWER</p><h2>{q.stem}</h2>{message&&<div className="notice">{message}</div>}<div className="options">{q.options.map(o=><button key={o.id} className={answers[q.id]===o.option_key?'option selected':'option'} onClick={()=>choose(o.option_key)}><b>{o.label}</b><span>{o.text}</span></button>)}</div><div className="actions">{current>0&&<button className="secondary" onClick={()=>setCurrent(v=>v-1)}>Previous</button>}{current<questions.length-1?<button disabled={!answers[q.id]} onClick={()=>setCurrent(v=>v+1)}>Next</button>:<button disabled={!answers[q.id]} onClick={finish}>Submit Round</button>}</div></section>}
- {screen==='submitted'&&<section className="card hero"><div className="check">✓</div><p className="eyebrow">SUBMITTED</p><h1>Round submitted</h1><p>Your score and the full Q&A with explanations will appear in <b>My Quiz</b> once the host releases results.</p><button onClick={()=>setScreen('home')}>Back to Home</button><button className="secondary" onClick={showHistory} style={{marginTop:8}}>Open My Quiz</button></section>}
+ {screen==='submitted'&&<section className="card hero"><div className="check">✓</div><p className="eyebrow">SUBMITTED</p><h1>Round submitted</h1><p>Your score and the full Q&A with explanations will appear in <b>My Quiz</b> once the host releases results.</p><button onClick={()=>setScreen('home')}>Back to Home</button><button className="secondary" onClick={()=>void showHistory()} style={{marginTop:8}}>Open My Quiz</button></section>}
  {screen==='history'&&<section>
    <div className="screenHead">
-     <div><p className="eyebrow">MY QUIZ</p><h2>Round review</h2></div>
-     <button className="secondary small" onClick={()=>setScreen('home')}>Back</button>
+     <div>
+       <p className="eyebrow">MY QUIZ</p>
+       <h2>{filterRound?`Round ${filterRound.round_number} review`:'Round review'}</h2>
+     </div>
+     <button className="secondary small" onClick={()=>{setHistoryRoundId(null);setScreen('home')}}>Back</button>
    </div>
-   {!history.length&&<div className="card"><p>No released results yet. After the host releases a round, the full Q&A review appears here for everyone.</p></div>}
-   {history.map(h=>{
+   {historyRoundId&&(
+     <p style={{margin:'0 0 12px',fontSize:13,color:'#64716f'}}>
+       Showing this round only · <button type="button" className="secondary small" style={{display:'inline-block',width:'auto',padding:'6px 10px',marginLeft:6}} onClick={()=>void showHistory()}>All rounds</button>
+     </p>
+   )}
+   {!visibleHistory.length&&<div className="card"><p>{historyRoundId?'No review data for this round yet.':'No released results yet. After the host releases a round, the full Q&A review appears here for everyone.'}</p></div>}
+   {visibleHistory.map(h=>{
      const attempted=!!h.attempted
      const scoreLabel=h.released?(attempted?`${h.score??0}`:'—'):'…'
      const scoreCls=h.released?(attempted?'':' skipped'):' pending'
