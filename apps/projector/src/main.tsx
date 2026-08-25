@@ -56,6 +56,12 @@ function normalizeOptions(value:unknown):{key:string;text:string;correct?:boolea
   });
 }
 
+function isCorrect(o:{key:string;correct?:boolean},answer?:string){
+  if(o.correct)return true;
+  if(!answer)return false;
+  return answer===o.key||answer.startsWith(o.key+'.')||answer.startsWith(o.key+' ');
+}
+
 function App(){
   const [view,setView]=useState<DisplayState>(demo);
   const [connected,setConnected]=useState(false);
@@ -75,64 +81,140 @@ function App(){
 
   const board=normalizeBoard(view.top10);
   const options=normalizeOptions(view.options);
+  const hasCorrect=options.some(o=>isCorrect(o,view.answer));
 
   const content=()=>{
     switch(view.state){
       case'RULES':
-        return <><small>RULES</small><h1>How to Play</h1><p>Answer on your device before the timer ends.</p></>;
-      case'QUESTION':
-        // Also used as “round live” cue when options empty
-        return <>
-          <small>{view.title??(view.round_number?`ROUND ${view.round_number}`:'QUESTION')}</small>
-          <h2 style={{whiteSpace:'pre-line'}}>{view.question}</h2>
-          {options.length>0&&(
-            <div className="options">
-              {options.map((o,i)=>(
-                <div key={i}><b>{o.key}</b>{o.text}</div>
-              ))}
-            </div>
-          )}
-        </>;
-      case'ANSWER_REVEAL':
-        return <>
-          <small>{view.title??'REVIEW'}{view.round_number?` · ROUND ${view.round_number}`:''}</small>
-          <h2>{view.question}</h2>
-          <div className="options">
-            {options.map((o,i)=>(
-              <div key={i} className={o.correct||(view.answer&&(view.answer.startsWith(o.key)||view.answer===o.key))?'correct':''}>
-                <b>{o.key}</b>{o.text}
-              </div>
-            ))}
+        return (
+          <div className="stage">
+            <div className="kicker">Rules</div>
+            <h1>How to play</h1>
+            <ul className="rules">
+              <li><span>1</span> Join on your phone or tablet</li>
+              <li><span>2</span> Answer before the timer ends</li>
+              <li><span>3</span> One device · fair play</li>
+              <li><span>4</span> Top scores advance</li>
+            </ul>
           </div>
-          {view.answer&&<p className="answer-line">Correct: <strong>{view.answer}</strong></p>}
-          {view.explanation&&<p className="expl">{view.explanation}</p>}
-        </>;
+        );
+
+      case'QUESTION':{
+        const liveOnly=!options.length;
+        return (
+          <div className="stage">
+            <div className="kicker">{liveOnly?'Live':(view.title??(view.round_number?`Round ${view.round_number}`:'Question'))}</div>
+            {liveOnly?(
+              <div className="hero-card">
+                <h1 style={{whiteSpace:'pre-line',fontSize:'clamp(32px,5vw,72px)'}}>{view.question}</h1>
+                <p className="sub" style={{marginTop:20}}><span className="pulse"/>Devices open — answer now</p>
+              </div>
+            ):(
+              <>
+                <h2 style={{whiteSpace:'pre-line'}}>{view.question}</h2>
+                <div className="options">
+                  {options.map((o,i)=>(
+                    <div key={i} className="opt"><span className="key">{o.key}</span><span>{o.text}</span></div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        );
+      }
+
+      case'ANSWER_REVEAL':
+        return (
+          <div className="stage">
+            <div className="kicker green">{view.title??'Review'}{view.round_number?` · Round ${view.round_number}`:''}</div>
+            <h2>{view.question}</h2>
+            <div className="options">
+              {options.map((o,i)=>{
+                const ok=isCorrect(o,view.answer);
+                return (
+                  <div key={i} className={'opt'+(ok?' correct':hasCorrect?' dim':'')}>
+                    <span className="key">{o.key}</span>
+                    <span>{o.text}</span>
+                  </div>
+                );
+              })}
+            </div>
+            {view.answer&&(
+              <div className="answer-bar">Correct · {view.answer}</div>
+            )}
+            {view.explanation&&<p className="expl">{view.explanation}</p>}
+          </div>
+        );
+
       case'EXPLANATION':
-        return <><small>EXPLANATION</small><h2>{view.explanation}</h2></>;
+        return (
+          <div className="stage">
+            <div className="kicker">Explanation</div>
+            <h2>{view.explanation}</h2>
+          </div>
+        );
+
       case'ROUND_TOP10':
       case'LEADERBOARD':
-        return <>
-          <small>{view.state==='ROUND_TOP10'?'ROUND TOP 10':'LEADERBOARD'}</small>
-          <h1>{view.title??'Leaderboard'}</h1>
-          <div className="board">
-            {board.length?board.map(x=>(
-              <div key={`${x.rank}-${x.name}`}><b>#{x.rank}</b><span>{x.name}</span><strong>{x.score}</strong></div>
-            )):<div className="empty">No standings yet</div>}
+        return (
+          <div className="stage">
+            <div className="kicker gold">{view.state==='ROUND_TOP10'?'Round top 10':'Overall standings'}</div>
+            <h1 style={{fontSize:'clamp(32px,5vw,64px)'}}>{view.title??'Leaderboard'}</h1>
+            <div className="board">
+              {board.length?board.map(x=>{
+                const cls=x.rank===1?' top':x.rank===2?' top2':x.rank===3?' top3':'';
+                return (
+                  <div className={'board-row'+cls} key={`${x.rank}-${x.name}`}>
+                    <span className="rank">#{x.rank}</span>
+                    <span className="name">{x.name}</span>
+                    <span className="pts">{x.score}</span>
+                  </div>
+                );
+              }):<div className="empty">Standings will appear after results are released</div>}
+            </div>
           </div>
-        </>;
+        );
+
       case'FINAL':
-        return <><small>GRAND FINAL</small><h1>{view.question??view.title??'Final'}</h1></>;
+        return (
+          <div className="stage">
+            <div className="kicker violet">Grand Final</div>
+            <div className="hero-card">
+              <h1>{view.question??view.title??'Final'}</h1>
+              <p className="sub">Top teams · final questions</p>
+            </div>
+          </div>
+        );
+
       case'WINNER':
-        return <><small>WINNER</small><h1>{view.title??'Congratulations!'}</h1></>;
+        return (
+          <div className="stage">
+            <div className="kicker gold">Champion</div>
+            <div className="hero-card">
+              <h1>{view.title??'Congratulations!'}</h1>
+              <p className="sub">GERiCARE Conference Quiz</p>
+            </div>
+          </div>
+        );
+
       default:
-        return <><small>GERiCARE</small><h1>{view.title??'Quiz will begin shortly'}</h1><p>Get ready.</p></>;
+        return (
+          <div className="stage">
+            <div className="kicker">GERiCARE</div>
+            <div className="hero-card">
+              <h1>{view.title??'Quiz will begin shortly'}</h1>
+              <p className="sub"><span className="pulse"/>Get ready on your devices</p>
+            </div>
+          </div>
+        );
     }
   };
 
   return (
     <main>
-      <div className="status">{connected?'LIVE':'RECONNECTING'}</div>
-      <section>{content()}</section>
+      <div className="brand">GERiCARE</div>
+      <div className={'status'+(connected?' live':'')}>{connected?'LIVE':'RECONNECTING'}</div>
+      {content()}
     </main>
   );
 }
