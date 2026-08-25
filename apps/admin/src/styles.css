@@ -1,13 +1,13 @@
-/* GERiCARE shared tokens — teal medical theme */
 :root{
-  --gc-bg:#f3f7f6;
+  --gc-bg:#faf7f9;
   --gc-surface:#ffffff;
-  --gc-ink:#10201e;
-  --gc-muted:#64716f;
-  --gc-border:#dce7e4;
-  --gc-primary:#0f766e;
-  --gc-primary-soft:#eef8f5;
-  --gc-primary-deep:#0a5c56;
+  --gc-ink:#1a1218;
+  --gc-muted:#6b5f66;
+  --gc-border:#eadde5;
+  --gc-primary:#8B1858;
+  --gc-primary-soft:#fceef5;
+  --gc-primary-deep:#6B1244;
+  --gc-accent:#2A9B7A;
   --gc-danger:#a34141;
   --gc-danger-bg:#fee2e2;
   --gc-ok:#166534;
@@ -22,24 +22,25 @@ body{margin:0;background:var(--gc-bg);color:var(--gc-ink);font-family:Inter,ui-s
 .app{min-height:100vh;padding-bottom:88px}
 .topbar{
   position:sticky;top:0;z-index:40;
-  background:linear-gradient(180deg,#0f766e 0%,#0a5c56 100%);color:#fff;
+  background:linear-gradient(180deg,#8B1858 0%,#6B1244 100%);color:#fff;
   border-bottom:none;padding:12px 16px;
   display:flex;align-items:center;justify-content:space-between;gap:10px;
 }
 .topbar small{font-size:10px;font-weight:900;letter-spacing:.12em;color:rgba(255,255,255,.75);display:block}
 .topbar h1{margin:2px 0 0;font-size:18px;color:#fff}
+.brand-mark{height:28px;width:28px;object-fit:contain;filter:brightness(0) invert(1)}
 .pill{
-  font-size:12px;color:#ecfdf5;background:rgba(255,255,255,.16);
+  font-size:12px;color:#fceef5;background:rgba(255,255,255,.16);
   border-radius:999px;padding:6px 10px;max-width:45vw;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
 .wrap{max-width:640px;margin:0 auto;padding:12px 12px 24px}
 .card{
   background:var(--gc-surface);border:1px solid var(--gc-border);
-  border-radius:var(--gc-radius);padding:14px;box-shadow:0 8px 24px #173f3810;
+  border-radius:var(--gc-radius);padding:14px;box-shadow:0 8px 24px #8B185810;
 }
 .btn{
-  border:1px solid var(--gc-border);background:#e9f0ee;color:#19312e;
+  border:1px solid var(--gc-border);background:#f3e8ef;color:var(--gc-primary-deep);
   border-radius:12px;padding:10px 14px;font-weight:800;font-size:13px;cursor:pointer;
 }
 .btn.primary{background:var(--gc-primary);color:#fff;border-color:var(--gc-primary)}
@@ -53,7 +54,7 @@ body{margin:0;background:var(--gc-bg);color:var(--gc-ink);font-family:Inter,ui-s
 .filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
 .badge{
   display:inline-block;font-size:10px;font-weight:900;text-transform:uppercase;
-  padding:2px 7px;border-radius:999px;background:#e9f0ee;color:#4b5563;margin-right:4px;
+  padding:2px 7px;border-radius:999px;background:#f3e8ef;color:#6b5f66;margin-right:4px;
 }
 .badge.ok{background:var(--gc-ok-bg);color:var(--gc-ok)}
 .badge.warn{background:var(--gc-warn-bg);color:var(--gc-warn)}
@@ -69,9 +70,9 @@ body{margin:0;background:var(--gc-bg);color:var(--gc-ink);font-family:Inter,ui-s
 .fab{
   position:fixed;right:16px;bottom:20px;width:54px;height:54px;border-radius:50%;
   border:0;background:var(--gc-primary);color:#fff;font-size:26px;
-  box-shadow:0 8px 24px rgba(15,118,110,.35);cursor:pointer;z-index:50;
+  box-shadow:0 8px 24px rgba(139,24,88,.35);cursor:pointer;z-index:50;
 }
-.overlay{position:fixed;inset:0;background:rgba(16,32,30,.45);z-index:60;display:grid;place-items:end center;padding:12px}
+.overlay{position:fixed;inset:0;background:rgba(26,18,24,.45);z-index:60;display:grid;place-items:end center;padding:12px}
 @media(min-width:640px){.overlay{place-items:center}}
 .modal{
   background:#fff;width:min(520px,100%);max-height:90vh;overflow:auto;
@@ -91,17 +92,16 @@ body{margin:0;background:var(--gc-bg);color:var(--gc-ink);font-family:Inter,ui-s
   margin-bottom:8px;overflow:hidden;background:#fff;
 }
 .qrow-h{width:100%;text-align:left;border:0;background:#fff;padding:12px;cursor:pointer;font:inherit}
-.qrow-b{padding:12px;border-top:1px solid #eef4f2;background:#f7faf9}
+.qrow-b{padding:12px;border-top:1px solid #f3e8ef;background:#fbf7f9}
 .optline{padding:8px;border:1px solid var(--gc-border);border-radius:10px;margin-bottom:6px;font-size:13px;background:#fff}
 .optline.ok{background:#f0fdf4;border-color:#86efac}
-
 .section{margin-bottom:20px}
 .section-head{
   position:sticky;top:56px;z-index:30;
   background:#fff;border:1px solid var(--gc-border);border-radius:var(--gc-radius-sm);
   padding:10px 12px;margin-bottom:8px;
   display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;
-  box-shadow:0 4px 12px rgba(15,118,110,.06);
+  box-shadow:0 4px 12px rgba(139,24,88,.06);
 }
 .section-head h3{margin:0;font-size:14px;color:var(--gc-ink)}
 .section-head p{margin:3px 0 0;font-size:12px;color:var(--gc-muted)}
