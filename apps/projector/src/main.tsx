@@ -17,7 +17,6 @@ type DisplayState={
   answer?:string;
   explanation?:string;
   top10?:unknown;
-  updated_at?:string;
 };
 
 const demo:DisplayState={state:'WAITING',title:'GERiCARE Conference Quiz'};
@@ -36,10 +35,11 @@ function asArray(value:unknown):unknown[]{
 function normalizeBoard(value:unknown):BoardRow[]{
   return asArray(value).map((row,i)=>{
     const r=(row&&typeof row==='object'?row:{}) as Record<string,unknown>;
-    const rank=Number(r.rank??i+1)||i+1;
-    const name=String(r.display_name??r.name??r.full_name??r.participant_name??'Participant').trim()||'Participant';
-    const score=Number(r.score??r.total_score??r.points??0)||0;
-    return {rank,name,score};
+    return{
+      rank:Number(r.rank??i+1)||i+1,
+      name:String(r.display_name??r.name??'Participant').trim()||'Participant',
+      score:Number(r.score??r.total_score??0)||0,
+    };
   });
 }
 
@@ -80,19 +80,26 @@ function App(){
     switch(view.state){
       case'RULES':
         return <><small>RULES</small><h1>How to Play</h1><p>Answer on your device before the timer ends.</p></>;
-      case'ROUND_LIVE':
-        return <><small>LIVE</small><h1>{view.title??`Round ${view.round_number??''}`}</h1><p>Answer on your devices now</p></>;
-      case'ROUND_CLOSED':
-        return <><small>ROUND CLOSED</small><h1>{view.title??`Round ${view.round_number??''}`}</h1><p>Answers locked</p></>;
-      case'RECAP':
       case'QUESTION':
+        // Also used as “round live” cue when options empty
+        return <>
+          <small>{view.title??(view.round_number?`ROUND ${view.round_number}`:'QUESTION')}</small>
+          <h2 style={{whiteSpace:'pre-line'}}>{view.question}</h2>
+          {options.length>0&&(
+            <div className="options">
+              {options.map((o,i)=>(
+                <div key={i}><b>{o.key}</b>{o.text}</div>
+              ))}
+            </div>
+          )}
+        </>;
       case'ANSWER_REVEAL':
         return <>
-          <small>ROUND {view.round_number} · REVIEW</small>
+          <small>{view.title??'REVIEW'}{view.round_number?` · ROUND ${view.round_number}`:''}</small>
           <h2>{view.question}</h2>
           <div className="options">
             {options.map((o,i)=>(
-              <div key={i} className={o.correct||(view.answer&&o.key===view.answer)?'correct':''}>
+              <div key={i} className={o.correct||(view.answer&&(view.answer.startsWith(o.key)||view.answer===o.key))?'correct':''}>
                 <b>{o.key}</b>{o.text}
               </div>
             ))}
@@ -108,13 +115,9 @@ function App(){
           <small>{view.state==='ROUND_TOP10'?'ROUND TOP 10':'LEADERBOARD'}</small>
           <h1>{view.title??'Leaderboard'}</h1>
           <div className="board">
-            {board.length
-              ? board.map(x=>(
-                  <div key={`${x.rank}-${x.name}`}>
-                    <b>#{x.rank}</b><span>{x.name}</span><strong>{x.score}</strong>
-                  </div>
-                ))
-              : <div className="empty">No standings yet</div>}
+            {board.length?board.map(x=>(
+              <div key={`${x.rank}-${x.name}`}><b>#{x.rank}</b><span>{x.name}</span><strong>{x.score}</strong></div>
+            )):<div className="empty">No standings yet</div>}
           </div>
         </>;
       case'FINAL':

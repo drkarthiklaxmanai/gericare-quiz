@@ -1,4 +1,4 @@
-import React,{useCallback,useEffect,useMemo,useRef,useState} from 'react';
+import React,{useCallback,useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {createClient} from '@supabase/supabase-js';
 import './styles.css';
@@ -7,6 +7,9 @@ const url=import.meta.env.VITE_SUPABASE_URL as string|undefined;
 const key=import.meta.env.VITE_SUPABASE_ANON_KEY as string|undefined;
 const supabase=url&&key?createClient(url,key):null;
 
+/** DB-allowed states only */
+const ALLOWED=new Set(['WAITING','RULES','QUESTION','ANSWER_REVEAL','EXPLANATION','ROUND_TOP10','LEADERBOARD','FINAL','WINNER']);
+
 type Round={id:string;event_id:string;round_number:number;title:string;status:string;questions_locked:boolean};
 type Attempt={id:string;participant_id:string;round_id:string;status:string;score:number};
 type Integrity={id:number;participant_id:string|null;event:string;occurred_at:string};
@@ -14,11 +17,8 @@ type Board={rank:number;participant_id?:string;display_name?:string;name?:string
 type Finalist={id:string;participant_id:string;preliminary_score:number;rank:number;status:string};
 type Sudden={id:string;question_number:number;question_id:string};
 type RQ={question_id:string;canonical_order:number;stem:string;explanation:string|null;options:{key:string;text:string;correct:boolean}[]};
-type ShowOrder='teach'|'compete'; // teach = Q&A then scores; compete = Top10 then Q&A
-type ShowStep=
-  |{id:string;kind:'waiting'|'rules'|'live'|'closed'|'recap'|'top10'|'overall';label:string;qIndex?:number};
-
-const QA_SECONDS_DEFAULT=12;
+type ShowOrder='teach'|'compete';
+type ShowStep={id:string;kind:'waiting'|'rules'|'live'|'closed'|'recap'|'top10'|'overall';label:string;qIndex?:number};
 
 function errText(e:unknown):string{
   if(e==null)return 'Unknown error';
@@ -83,10 +83,9 @@ function App(){
   const[locked,setLocked]=useState(false);
   const lockEventRef=useRef<string|null>(null);
 
-  // Projector show
   const[showOrder,setShowOrder]=useState<ShowOrder>('teach');
   const[autoFollow,setAutoFollow]=useState(true);
-  const[qaSeconds,setQaSeconds]=useState(QA_SECONDS_DEFAULT);
+  const[qaSeconds,setQaSeconds]=useState(12);
   const[paused,setPaused]=useState(false);
   const[roundQs,setRoundQs]=useState<RQ[]>([]);
   const[playlist,setPlaylist]=useState<ShowStep[]>([]);
@@ -109,11 +108,11 @@ function App(){
   };
 
   const loadRoundQuestions=async(roundId:string)=>{
-    if(!supabase)return;
+    if(!supabase)return [] as RQ[];
     const{data:rq,error}=await supabase.from('round_questions').select('question_id,canonical_order').eq('round_id',roundId).order('canonical_order');
     if(error)throw error;
     const rows=rq??[];
-    if(!rows.length){setRoundQs([]);return}
+    if(!rows.length){setRoundQs([]);return []}
     const ids=rows.map(r=>r.question_id);
     const[{data:qs},{data:opts}]=await Promise.all([
       supabase.from('questions').select('id,stem,explanation').in('id',ids),
@@ -126,7 +125,7 @@ function App(){
       list.push({key:o.option_key,text:o.option_text,correct:!!o.is_correct});
       byQ.set(o.question_id,list);
     }
-    setRoundQs(rows.map(r=>{
+    const built=rows.map(r=>{
       const q=qmap.get(r.question_id);
       return{
         question_id:r.question_id,
@@ -135,7 +134,9 @@ function App(){
         explanation:q?.explanation??null,
         options:byQ.get(r.question_id)??[],
       };
-    }));
+    });
+    setRoundQs(built);
+    return built;
   };
 
   const load=async()=>{
@@ -186,6 +187,7 @@ function App(){
 
   const publish=useCallback(async(state:string,payload:Record<string,unknown>={})=>{
     if(!eventId)return;
+    if(!ALLOWED.has(state))throw Error(`Invalid presentation state (use allowed enum): ${state}`);
     await rpc('publish_presentation_state',{
       p_event_id:eventId,
       p_state:state,
@@ -201,36 +203,54 @@ function App(){
     });
   },[eventId,selected?.id]);
 
+  /** Map show kinds → allowed DB states */
   const publishStep=useCallback(async(step:ShowStep,r:Round|null,qs:RQ[])=>{
-    if(!r)return;
-    if(step.kind==='live'){
-      await publish('ROUND_LIVE',{p_title:`Round ${r.round_number} — ${r.title}`,p_round_id:r.id});
-      return;
-    }
-    if(step.kind==='closed'){
-      await publish('ROUND_CLOSED',{p_title:`Round ${r.round_number}`,p_round_id:r.id});
-      return;
-    }
-    if(step.kind==='recap'){
-      const q=qs[step.qIndex??0];
-      if(!q)return;
-      const correct=q.options.find(o=>o.correct);
-      await publish('RECAP',{
+    if(!r&&step.kind!=='waiting'&&step.kind!=='rules'&&step.kind!=='overall')return;
+    if(step.kind==='live'&&r){
+      // No ROUND_LIVE in DB — use QUESTION as a full-screen cue
+      await publish('QUESTION',{
         p_round_id:r.id,
         p_title:`Round ${r.round_number}`,
+        p_question:`Round ${r.round_number} — ${r.title}\n\nAnswer on your devices now`,
+        p_options:[],
+      });
+      return;
+    }
+    if(step.kind==='closed'&&r){
+      await publish('WAITING',{
+        p_round_id:r.id,
+        p_title:`Round ${r.round_number} closed`,
+      });
+      return;
+    }
+    if(step.kind==='recap'&&r){
+      const q=qs[step.qIndex??0];
+      if(!q)throw Error('No question for this recap step — is the set locked in Admin?');
+      const correct=q.options.find(o=>o.correct);
+      // One slide: question + options + correct (ANSWER_REVEAL is allowed)
+      await publish('ANSWER_REVEAL',{
+        p_round_id:r.id,
+        p_title:`Round ${r.round_number} · Q${(step.qIndex??0)+1}`,
         p_question:q.stem,
         p_options:q.options.map(o=>({key:o.key,text:o.text,correct:o.correct})),
-        p_answer:correct?.key??null,
+        p_answer:correct?`${correct.key}. ${correct.text}`:null,
         p_explanation:q.explanation,
       });
       return;
     }
-    if(step.kind==='top10'){
-      await publish('ROUND_TOP10',{p_title:`Round ${r.round_number} · Top 10`,p_round_id:r.id,p_top10:normalizeBoard(boardRef.current)});
+    if(step.kind==='top10'&&r){
+      await publish('ROUND_TOP10',{
+        p_round_id:r.id,
+        p_title:`Round ${r.round_number} · Top 10`,
+        p_top10:normalizeBoard(boardRef.current),
+      });
       return;
     }
     if(step.kind==='overall'){
-      await publish('LEADERBOARD',{p_title:'Overall leaderboard',p_top10:normalizeBoard(boardRef.current)});
+      await publish('LEADERBOARD',{
+        p_title:'Overall leaderboard',
+        p_top10:normalizeBoard(boardRef.current),
+      });
       return;
     }
     if(step.kind==='waiting')await publish('WAITING',{p_title:'GERiCARE Conference Quiz'});
@@ -243,10 +263,10 @@ function App(){
     if(!list.length||idx<0||idx>=list.length)return;
     setPlayIdx(idx);
     setMessage(`Projector: ${list[idx].label}`);setMsgKind('info');
-    try{await publishStep(list[idx],r,qs)}catch(e){setMessage(errText(e));setMsgKind('err')}
+    try{await publishStep(list[idx],r,qs);setMsgKind('ok')}
+    catch(e){setMessage(errText(e));setMsgKind('err')}
   },[publishStep]);
 
-  // Timed advance on recap steps only
   useEffect(()=>{
     clearTimer();
     if(paused||!playlist.length)return;
@@ -257,20 +277,6 @@ function App(){
     },Math.max(5,qaSeconds)*1000);
     return clearTimer;
   },[playIdx,playlist,paused,qaSeconds,selected,roundQs,goToIndex]);
-
-  const startPostCloseShow=async(r:Round)=>{
-    await loadRoundQuestions(r.id);
-    // re-read after load — use functional path with fresh fetch
-    if(!supabase)return;
-    const{data:rq}=await supabase.from('round_questions').select('question_id,canonical_order').eq('round_id',r.id).order('canonical_order');
-    const n=(rq??[]).length||roundQs.length||3;
-    const steps=buildPostCloseSteps(showOrder,n);
-    setPlaylist(steps);
-    setPlayIdx(0);
-    setPaused(false);
-    // Load qs into local for first publish
-    await loadRoundQuestions(r.id);
-  };
 
   const run=async(label:string,fn:()=>Promise<unknown>)=>{
     try{setMessage(label+'…');setMsgKind('info');await fn();setMessage(label+' — done');setMsgKind('ok');await load()}
@@ -297,26 +303,12 @@ function App(){
   const closeRound=()=>selected&&run('Close round',async()=>{
     await rpc('close_round',{p_event_id:selected.event_id,p_round_id:selected.id});
     if(autoFollow){
-      await startPostCloseShow(selected);
-      // publish first post-close step after qs loaded
-      const{data:rq}=await supabase!.from('round_questions').select('question_id').eq('round_id',selected.id);
-      const n=(rq??[]).length||3;
-      const steps=buildPostCloseSteps(showOrder,n);
-      setPlaylist(steps);setPlayIdx(0);
-      await loadRoundQuestions(selected.id);
-      // small delay for state
-      await new Promise(res=>setTimeout(res,100));
+      const qs=await loadRoundQuestions(selected.id);
+      const steps=buildPostCloseSteps(showOrder,qs.length||3);
+      setPlaylist(steps);setPlayIdx(0);setPaused(false);
+      await publishStep(steps[0],selected,qs);
     }
   });
-
-  // After close playlist set, publish step 0 when roundQs updates
-  const postCloseBoot=useRef(false);
-  useEffect(()=>{
-    if(!autoFollow||!selected||selected.status!=='closed')return;
-    if(!playlist.length||playlist[0]?.kind!=='closed')return;
-    if(playIdx!==0)return;
-    void publishStep(playlist[0],selected,roundQs);
-  },[playlist,roundQs,selected?.status]);
 
   const releaseResults=()=>selected&&run('Release results',async()=>{
     await rpc('release_round_results',{p_event_id:selected.event_id,p_round_id:selected.id});
@@ -324,10 +316,10 @@ function App(){
     await rpc('build_overall_leaderboard',{p_event_id:selected.event_id});
     await load();
     if(autoFollow){
-      // Jump to first scores step in current playlist, or build if empty
       let list=playlist;
       if(!list.length){
-        list=buildPostCloseSteps(showOrder,roundQs.length||3);
+        const qs=roundQs.length?roundQs:await loadRoundQuestions(selected.id);
+        list=buildPostCloseSteps(showOrder,qs.length||3);
         setPlaylist(list);
       }
       const scoreIdx=list.findIndex(s=>s.kind==='top10');
@@ -375,7 +367,6 @@ function App(){
           </div>
         </section>
 
-        {/* Projector run-of-show */}
         <section className="section">
           <h3>Projector show</h3>
           <div className="actions" style={{marginBottom:10}}>
@@ -424,10 +415,10 @@ function App(){
           {selected&&selected.questions_locked&&(
             <div className="actions" style={{marginTop:8}}>
               <button type="button" className="btn" onClick={()=>void run('Start post-round show',async()=>{
-                const steps=buildPostCloseSteps(showOrder,roundQs.length||3);
+                const qs=await loadRoundQuestions(selected.id);
+                const steps=buildPostCloseSteps(showOrder,qs.length||3);
                 setPlaylist(steps);setPlayIdx(0);setPaused(false);
-                await loadRoundQuestions(selected.id);
-                await goToIndex(0,steps,selected,roundQs);
+                await goToIndex(0,steps,selected,qs);
               })}>Start Q&A / scores sequence</button>
             </div>
           )}
@@ -485,11 +476,10 @@ function App(){
               <button type="button" className="btn" onClick={()=>void run('Final board',()=>rpc('build_final_leaderboard',{p_event_id:eventId}))}>Final board</button>
               <button type="button" className="btn danger" onClick={()=>void run('Complete',async()=>{await rpc('complete_event',{p_event_id:eventId});await publish('WINNER')})}>Complete</button>
             </div>
-            <p className="muted">{finalists.length} finalists</p>
             <div className="actions" style={{marginTop:8}}>
               <input value={suddenQuestion} onChange={e=>setSuddenQuestion(e.target.value)} placeholder="SD question UUID"/>
-              <button type="button" className="btn" onClick={()=>void run('SD start',async()=>{if(!suddenQuestion.trim())throw Error('UUID required');await rpc('start_sudden_death',{p_event_id:eventId,p_question_id:suddenQuestion.trim()});setSuddenQuestion('')})}>Start SD</button>
-              <button type="button" className="btn" disabled={!sudden} onClick={()=>void run('SD resolve',async()=>{if(!sudden)throw Error('none');await rpc('resolve_sudden_death',{p_sudden_death_id:sudden.id})})}>Resolve</button>
+              <button type="button" className="btn" onClick={()=>void run('SD',async()=>{if(!suddenQuestion.trim())throw Error('UUID');await rpc('start_sudden_death',{p_event_id:eventId,p_question_id:suddenQuestion.trim()});setSuddenQuestion('')})}>Start SD</button>
+              <button type="button" className="btn" disabled={!sudden} onClick={()=>void run('Resolve SD',async()=>{if(!sudden)throw Error('none');await rpc('resolve_sudden_death',{p_sudden_death_id:sudden.id})})}>Resolve</button>
             </div>
           </div>
         </details>
@@ -500,7 +490,6 @@ function App(){
             {integrity.slice(0,12).map(x=>(
               <div className="row" key={x.id}><span>{new Date(x.occurred_at).toLocaleTimeString()}</span><strong>{x.event}</strong><span>{x.participant_id?.slice(0,8)??'—'}</span></div>
             ))}
-            {!integrity.length&&<p className="muted">None</p>}
           </div>
         </details>
       </div>
