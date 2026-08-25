@@ -54,7 +54,7 @@ export default function App(){
  const[rounds,setRounds]=useState<Round[]>([]),[roundAttempts,setRoundAttempts]=useState<AttemptSummary[]>([]),[history,setHistory]=useState<HistoryItem[]>([]),[leaderboard,setLeaderboard]=useState<any>(null)
  const questions=useMemo(()=>attempt?.questions??[],[attempt])
  useEffect(()=>{if(!supabase){setScreen('home');setMessage('Demo mode: Supabase is not configured.');return}void supabase.auth.getSession().then(({data})=>{setSession(data.session);if(data.session)void bootstrap()});const{data:l}=supabase.auth.onAuthStateChange((_e,next)=>{setSession(next);if(next)void bootstrap()});return()=>l.subscription.unsubscribe()},[])
- async function bootstrap(){if(!supabase)return;setBusy(true);try{const configured=import.meta.env.VITE_EVENT_ID as string|undefined;let query=supabase.from('events').select('id,name,status,registration_open');if(configured)query=query.eq('id',configured);const{data:ev,error:ee}=await query.limit(1).maybeSingle();if(ee)throw ee;if(!ev)throw Error('No accessible conference event');setEvent(ev);const{data:ep,error:pe}=await supabase.from('event_participants').select('id,event_id,display_name').eq('event_id',ev.id).maybeSingle();if(pe)throw pe;if(ep){setParticipant(ep);setScreen('home');await loadHome(ev.id)}else setScreen('register')}catch(e){setMessage(errText(e))}finally{setBusy(false)}}
+ async function bootstrap(){if(!supabase)return;setBusy(true);setMessage('');try{const configured=import.meta.env.VITE_EVENT_ID as string|undefined;let query=supabase.from('events').select('id,name,status,registration_open');if(configured)query=query.eq('id',configured);const{data:ev,error:ee}=await query.limit(1).maybeSingle();if(ee)throw ee;if(!ev)throw Error('No accessible conference event');setEvent(ev);const{data:ep,error:pe}=await supabase.from('event_participants').select('id,event_id,display_name').eq('event_id',ev.id).maybeSingle();if(pe)throw pe;if(ep){setParticipant(ep);setScreen('home');await loadHome(ev.id)}else setScreen('register')}catch(e){setMessage(errText(e))}finally{setBusy(false)}}
  async function loadHome(eventId=event?.id){if(!eventId)return;const r=await quizApi.availableRounds(eventId);if(r.error){setMessage(errText(r.error));return}const d=r.data as any;setRounds(d?.rounds??[]);setRoundAttempts(d?.attempts??[])}
  useEffect(()=>{
    if(screen!=='home'||!event)return
@@ -103,7 +103,70 @@ export default function App(){
  })}</section>{session&&<button className="secondary standalone" onClick={signOut}>Sign out</button>}</>}
  {screen==='quiz'&&q&&<section className="card"><div className="quizTop"><span>Question {current+1} of {questions.length}</span><strong>{mins}:{secs}</strong></div><div className="progress"><i style={{width:`${((current+1)/questions.length)*100}%`}}/></div><p className="eyebrow">SINGLE BEST ANSWER</p><h2>{q.stem}</h2>{message&&<div className="notice">{message}</div>}<div className="options">{q.options.map(o=><button key={o.id} className={answers[q.id]===o.option_key?'option selected':'option'} onClick={()=>choose(o.option_key)}><b>{o.label}</b><span>{o.text}</span></button>)}</div><div className="actions">{current>0&&<button className="secondary" onClick={()=>setCurrent(v=>v-1)}>Previous</button>}{current<questions.length-1?<button disabled={!answers[q.id]} onClick={()=>setCurrent(v=>v+1)}>Next</button>:<button disabled={!answers[q.id]} onClick={finish}>Submit Round</button>}</div></section>}
  {screen==='submitted'&&<section className="card hero"><div className="check">✓</div><p className="eyebrow">SUBMITTED</p><h1>Round submitted</h1><p>Your score and the full Q&A with explanations will appear in <b>My Quiz</b> once the host releases results.</p><button onClick={()=>setScreen('home')}>Back to Home</button><button className="secondary" onClick={showHistory} style={{marginTop:8}}>Open My Quiz</button></section>}
- {screen==='history'&&<section><div className="screenHead"><div><p className="eyebrow">MY QUIZ</p><h2>Round review</h2></div><button className="secondary small" onClick={()=>setScreen('home')}>Back</button></div>{!history.length&&<div className="card"><p>No released results yet. After the host releases a round, the full Q&A review appears here for everyone.</p></div>}{history.map(h=><div className="card historyCard" key={h.id}><div className="historyTop"><div><b>Round {h.round?.round_number}</b><span>{h.round?.title}</span></div><strong>{h.released?(h.attempted?`${h.score??0} pts`:'Did not attempt'):'Pending release'}</strong></div>{h.released&&!h.attempted&&<p style={{margin:'0 0 10px',fontSize:13,color:'#64748b'}}>You did not play this round. Correct answers and explanations are shown below.</p>}{h.released&&h.responses?.map((r,i)=><div className="answerReview" key={r.question_id}><b>{i+1}. {r.stem}</b>{h.attempted?(<p className={r.is_correct?'correct':'wrong'}>{r.is_correct?'✓ Correct':'✕ Incorrect'} · Your answer: {r.selected_option??'No answer'}{r.points_awarded!=null?` · ${r.points_awarded} pts`:''}</p>):(<p className="wrong">Your answer: — (not attempted)</p>)}<p>Correct answer: {r.correct_option}</p>{r.explanation&&<small>{r.explanation}</small>}</div>)}{h.released&&!h.responses?.length&&<p className="muted">Results released — questions not loaded.</p>}</div>)}</section>}
+ {screen==='history'&&<section>
+   <div className="screenHead">
+     <div><p className="eyebrow">MY QUIZ</p><h2>Round review</h2></div>
+     <button className="secondary small" onClick={()=>setScreen('home')}>Back</button>
+   </div>
+   {!history.length&&<div className="card"><p>No released results yet. After the host releases a round, the full Q&A review appears here for everyone.</p></div>}
+   {history.map(h=>{
+     const attempted=!!h.attempted
+     const scoreLabel=h.released
+       ? (attempted?`${h.score??0}`:'—')
+       : '…'
+     const scoreCls=h.released?(attempted?'':' skipped'):' pending'
+     return (
+       <div className="card historyCard" key={h.id}>
+         <div className="historyHead">
+           <div className="ht-left">
+             <p className="ht-eyebrow">ROUND {h.round?.round_number}</p>
+             <h3>{h.round?.title??`Round ${h.round?.round_number}`}</h3>
+             <p className="ht-meta">{h.released?(attempted?'You attempted this round':'You did not attempt this round'):'Pending release'}</p>
+           </div>
+           <div className={'score-pill'+scoreCls}>
+             <span className="sp-num">{scoreLabel}</span>
+             <span className="sp-label">{h.released?(attempted?'PTS':'SKIP'):'WAIT'}</span>
+           </div>
+         </div>
+         <div className="historyBody">
+           {h.released&&!attempted&&(
+             <p className="skip-note">Correct answers and explanations are shown so you can still learn from this round.</p>
+           )}
+           {h.released&&h.responses?.map((r,i)=>{
+             const pillCls=r.is_correct===true?'ok':r.is_correct===false?'bad':'skip'
+             const pillText=r.is_correct===true?'Correct':r.is_correct===false?'Incorrect':'Not attempted'
+             return (
+               <div className="q-card" key={r.question_id}>
+                 <div className="q-top">
+                   <span className="q-num">{i+1}</span>
+                   <p className="q-stem">{r.stem}</p>
+                 </div>
+                 <span className={'result-pill '+pillCls}>{pillText}{r.points_awarded!=null&&attempted?` · ${r.points_awarded} pts`:''}</span>
+                 {attempted&&(
+                   <div className="ans-row yours">
+                     <span className="lab">Yours</span>
+                     <span className="val">{r.selected_option??'No answer'}</span>
+                   </div>
+                 )}
+                 <div className="ans-row correct-row">
+                   <span className="lab">Correct</span>
+                   <span className="val">{r.correct_option}</span>
+                 </div>
+                 {r.explanation&&(
+                   <div className="explain">
+                     <span className="ex-label">Explanation</span>
+                     {r.explanation}
+                   </div>
+                 )}
+               </div>
+             )
+           })}
+           {h.released&&!h.responses?.length&&<p className="skip-note">Results released — questions not loaded.</p>}
+         </div>
+       </div>
+     )
+   })}
+ </section>}
  {screen==='leaderboard'&&<section><div className="screenHead"><div><p className="eyebrow">STANDINGS</p><h2>Leaderboard</h2></div><button className="secondary small" onClick={()=>setScreen('home')}>Back</button></div><div className="card">{boardRows.length?boardRows.map((x:any,i:number)=><div className="leaderRow" key={x.participant_id??i}><b>#{x.rank??i+1}</b><span>{x.display_name??x.name??'Participant'}</span><strong>{x.score??x.best5_score??0}</strong></div>):<p>No released leaderboard yet.</p>}</div></section>}
  </main>
 }
