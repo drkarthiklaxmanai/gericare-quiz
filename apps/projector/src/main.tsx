@@ -7,7 +7,15 @@ const url=import.meta.env.VITE_SUPABASE_URL as string|undefined;
 const key=import.meta.env.VITE_SUPABASE_ANON_KEY as string|undefined;
 const supabase=url&&key?createClient(url,key):null;
 
-type BoardRow={rank:number;name:string;score:number};
+type BoardRow={
+  rank:number;
+  name:string;
+  score:number;
+  total_score?:number;
+  round_score?:number|null;
+  prev_rank?:number|null;
+  rank_delta?:number|null;
+};
 type DisplayState={
   state:string;
   round_number?:number;
@@ -35,11 +43,13 @@ function asArray(value:unknown):unknown[]{
 function normalizeBoard(value:unknown):BoardRow[]{
   return asArray(value).map((row,i)=>{
     const r=(row&&typeof row==='object'?row:{}) as Record<string,unknown>;
-    return{
-      rank:Number(r.rank??i+1)||i+1,
-      name:String(r.display_name??r.name??'Participant').trim()||'Participant',
-      score:Number(r.score??r.total_score??0)||0,
-    };
+    const rank=Number(r.rank??i+1)||i+1;
+    const name=String(r.display_name??r.name??'Participant').trim()||'Participant';
+    const total=Number(r.total_score??r.score??0)||0;
+    const roundScore=r.round_score!=null?Number(r.round_score):null;
+    const prev=r.prev_rank!=null?Number(r.prev_rank):null;
+    const delta=r.rank_delta!=null?Number(r.rank_delta):(prev!=null?prev-rank:null);
+    return{rank,name,score:total,total_score:total,round_score:roundScore,prev_rank:prev,rank_delta:delta};
   });
 }
 
@@ -62,6 +72,13 @@ function isCorrect(o:{key:string;correct?:boolean},answer?:string){
   return answer===o.key||answer.startsWith(o.key+'.')||answer.startsWith(o.key+' ');
 }
 
+function moveEl(delta:number|null|undefined,prev:number|null|undefined){
+  if(prev==null&&(delta==null||delta===0))return <span className="mv new">NEW</span>;
+  if(delta==null||delta===0)return <span className="mv flat">—</span>;
+  if(delta>0)return <span className="mv up">▲{delta}</span>;
+  return <span className="mv down">▼{Math.abs(delta)}</span>;
+}
+
 function App(){
   const [view,setView]=useState<DisplayState>(demo);
   const [connected,setConnected]=useState(false);
@@ -82,6 +99,7 @@ function App(){
   const board=normalizeBoard(view.top10);
   const options=normalizeOptions(view.options);
   const hasCorrect=options.some(o=>isCorrect(o,view.answer));
+  const showRoundCol=view.state==='ROUND_TOP10'&&board.some(b=>b.round_score!=null);
 
   const content=()=>{
     switch(view.state){
@@ -112,11 +130,7 @@ function App(){
             ):(
               <>
                 <h2 style={{whiteSpace:'pre-line'}}>{view.question}</h2>
-                <div className="options">
-                  {options.map((o,i)=>(
-                    <div key={i} className="opt"><span className="key">{o.key}</span><span>{o.text}</span></div>
-                  ))}
-                </div>
+                <div className="options">{options.map((o,i)=><div key={i} className="opt"><span className="key">{o.key}</span><span>{o.text}</span></div>)}</div>
               </>
             )}
           </div>
@@ -131,43 +145,40 @@ function App(){
             <div className="options">
               {options.map((o,i)=>{
                 const ok=isCorrect(o,view.answer);
-                return (
-                  <div key={i} className={'opt'+(ok?' correct':hasCorrect?' dim':'')}>
-                    <span className="key">{o.key}</span>
-                    <span>{o.text}</span>
-                  </div>
-                );
+                return <div key={i} className={'opt'+(ok?' correct':hasCorrect?' dim':'')}><span className="key">{o.key}</span><span>{o.text}</span></div>;
               })}
             </div>
-            {view.answer&&(
-              <div className="answer-bar">Correct · {view.answer}</div>
-            )}
+            {view.answer&&<div className="answer-bar">Correct · {view.answer}</div>}
             {view.explanation&&<p className="expl">{view.explanation}</p>}
           </div>
         );
 
       case'EXPLANATION':
-        return (
-          <div className="stage">
-            <div className="kicker">Explanation</div>
-            <h2>{view.explanation}</h2>
-          </div>
-        );
+        return <div className="stage"><div className="kicker">Explanation</div><h2>{view.explanation}</h2></div>;
 
       case'ROUND_TOP10':
       case'LEADERBOARD':
         return (
           <div className="stage">
             <div className="kicker gold">{view.state==='ROUND_TOP10'?'Round top 10':'Overall standings'}</div>
-            <h1 style={{fontSize:'clamp(32px,5vw,64px)'}}>{view.title??'Leaderboard'}</h1>
-            <div className="board">
+            <h1 style={{fontSize:'clamp(28px,4.5vw,56px)'}}>{view.title??'Leaderboard'}</h1>
+            <div className={'board'+(showRoundCol?' with-round':'')}>
+              <div className="board-head">
+                <span>#</span>
+                <span></span>
+                <span>Name</span>
+                {showRoundCol&&<span className="num">Round</span>}
+                <span className="num">Total</span>
+              </div>
               {board.length?board.map(x=>{
                 const cls=x.rank===1?' top':x.rank===2?' top2':x.rank===3?' top3':'';
                 return (
                   <div className={'board-row'+cls} key={`${x.rank}-${x.name}`}>
                     <span className="rank">#{x.rank}</span>
+                    <span className="move">{moveEl(x.rank_delta,x.prev_rank)}</span>
                     <span className="name">{x.name}</span>
-                    <span className="pts">{x.score}</span>
+                    {showRoundCol&&<span className="pts round">{x.round_score??0}</span>}
+                    <span className="pts">{x.total_score??x.score}</span>
                   </div>
                 );
               }):<div className="empty">Standings will appear after results are released</div>}

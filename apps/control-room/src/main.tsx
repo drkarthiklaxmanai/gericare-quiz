@@ -13,7 +13,17 @@ type Tab='rounds'|'projector'|'final';
 type Round={id:string;event_id:string;round_number:number;title:string;status:string;questions_locked:boolean};
 type Attempt={id:string;participant_id:string;round_id:string;status:string;score:number};
 type Integrity={id:number;participant_id:string|null;event:string;occurred_at:string};
-type Board={rank:number;participant_id?:string;display_name?:string;name?:string;score:number};
+type Board={
+  rank:number;
+  participant_id?:string;
+  display_name?:string;
+  name?:string;
+  score:number;
+  total_score?:number;
+  round_score?:number;
+  prev_rank?:number|null;
+  rank_delta?:number|null;
+};
 type Finalist={id:string;participant_id:string;preliminary_score:number;rank:number;status:string};
 type Sudden={id:string;question_number:number;question_id:string};
 type RQ={question_id:string;canonical_order:number;stem:string;explanation:string|null;options:{key:string;text:string;correct:boolean}[]};
@@ -32,14 +42,76 @@ function errText(e:unknown):string{
   try{return JSON.stringify(e)}catch{return String(e)}
 }
 
-function normalizeBoard(rows:Board[]){
-  return (rows??[]).map((b,i)=>({
-    rank:Number(b.rank??i+1)||i+1,
-    name:String(b.display_name??b.name??'Participant').trim()||'Participant',
-    display_name:String(b.display_name??b.name??'Participant').trim()||'Participant',
-    score:Number(b.score??0)||0,
-    participant_id:b.participant_id,
-  }));
+function rowsFromPayload(payload:unknown):Record<string,unknown>[]{
+  if(Array.isArray(payload))return payload as Record<string,unknown>[];
+  if(payload&&typeof payload==='object'){
+    const o=payload as Record<string,unknown>;
+    if(Array.isArray(o.rows))return o.rows as Record<string,unknown>[];
+    if(Array.isArray(o.leaderboard))return o.leaderboard as Record<string,unknown>[];
+    if(Array.isArray(o.top10))return o.top10 as Record<string,unknown>[];
+  }
+  return [];
+}
+
+function normalizeBoard(rows:Board[]|Record<string,unknown>[]){
+  return (rows??[]).map((b,i)=>{
+    const r=b as Record<string,unknown>;
+    const rank=Number(r.rank??i+1)||i+1;
+    const name=String(r.display_name??r.name??'Participant').trim()||'Participant';
+    const score=Number(r.score??r.total_score??0)||0;
+    const total=Number(r.total_score??r.score??0)||0;
+    const roundScore=r.round_score!=null?Number(r.round_score):undefined;
+    const prev=r.prev_rank!=null?Number(r.prev_rank):null;
+    const delta=r.rank_delta!=null?Number(r.rank_delta):(prev!=null?prev-rank:null);
+    return{
+      rank,
+      name,
+      display_name:name,
+      score,
+      total_score:total,
+      round_score:roundScore,
+      prev_rank:prev,
+      rank_delta:delta,
+      participant_id:r.participant_id!=null?String(r.participant_id):undefined,
+    } as Board;
+  });
+}
+
+/** Enrich board with round_score, total_score, prev_rank, rank_delta for projector */
+function enrichBoard(
+  base:Board[],
+  attempts:Attempt[],
+  roundId:string|null|undefined,
+  prevRankByParticipant:Map<string,number>,
+):Board[]{
+  const roundScoreByP=new Map<string,number>();
+  const totalByP=new Map<string,number>();
+  for(const a of attempts){
+    const s=Number(a.score)||0;
+    totalByP.set(a.participant_id,(totalByP.get(a.participant_id)??0)+s);
+    if(roundId&&a.round_id===roundId){
+      roundScoreByP.set(a.participant_id,Math.max(roundScoreByP.get(a.participant_id)??0,s));
+    }
+  }
+  return base.map((b,i)=>{
+    const pid=b.participant_id;
+    const rank=b.rank||i+1;
+    const total=pid&&totalByP.has(pid)?totalByP.get(pid)!:(b.total_score??b.score??0);
+    const round_score=pid&&roundId?(roundScoreByP.get(pid)??0):(b.round_score??undefined);
+    const prev_rank=pid&&prevRankByParticipant.has(pid)?prevRankByParticipant.get(pid)!:(b.prev_rank??null);
+    const rank_delta=prev_rank!=null?prev_rank-rank:null;
+    return{
+      ...b,
+      rank,
+      score:total,
+      total_score:total,
+      round_score,
+      prev_rank,
+      rank_delta,
+      display_name:b.display_name??b.name,
+      name:b.name??b.display_name,
+    };
+  });
 }
 
 async function rpc(name:string,args:Record<string,unknown>={}){
@@ -68,6 +140,14 @@ function buildPostCloseSteps(order:ShowOrder,qCount:number):ShowStep[]{
   return[{id:'closed',kind:'closed',label:'Round closed'},top,...recaps,overall];
 }
 
+function movementLabel(delta:number|null|undefined,prev:number|null|undefined){
+  if(prev==null&&(delta==null))return 'NEW';
+  if(delta==null)return '—';
+  if(delta===0)return '—';
+  if(delta>0)return `▲${delta}`;
+  return `▼${Math.abs(delta)}`;
+}
+
 function App(){
   const[tab,setTab]=useState<Tab>('rounds');
   const[eventId,setEventId]=useState('');
@@ -75,6 +155,7 @@ function App(){
   const[attempts,setAttempts]=useState<Attempt[]>([]);
   const[integrity,setIntegrity]=useState<Integrity[]>([]);
   const[board,setBoard]=useState<Board[]>([]);
+  const[prevRanks,setPrevRanks]=useState<Map<string,number>>(new Map());
   const[finalists,setFinalists]=useState<Finalist[]>([]);
   const[sudden,setSudden]=useState<Sudden|null>(null);
   const[suddenQuestion,setSuddenQuestion]=useState('');
@@ -93,7 +174,11 @@ function App(){
   const[playIdx,setPlayIdx]=useState(0);
   const timerRef=useRef<number|null>(null);
   const boardRef=useRef<Board[]>([]);
+  const attemptsRef=useRef<Attempt[]>([]);
+  const prevRanksRef=useRef<Map<string,number>>(new Map());
   boardRef.current=board;
+  attemptsRef.current=attempts;
+  prevRanksRef.current=prevRanks;
 
   const resolveEvent=async()=>{
     if(eventId)return eventId;
@@ -138,19 +223,32 @@ function App(){
     if(!supabase){setMessage('Configure Supabase');setMsgKind('err');return}
     try{
       const eid=await resolveEvent();
-      const [{data:r,error:re},{data:a,error:ae},{data:i,error:ie},{data:s,error:se},{data:f,error:fe},{data:sd,error:sde}]=await Promise.all([
+      const [{data:r,error:re},{data:a,error:ae},{data:i,error:ie},{data:snaps,error:se},{data:f,error:fe},{data:sd,error:sde}]=await Promise.all([
         supabase.from('rounds').select('id,event_id,round_number,title,status,questions_locked').eq('event_id',eid).order('round_number'),
-        supabase.from('attempts').select('id,participant_id,round_id,status,score').eq('event_id',eid).order('started_at',{ascending:false}).limit(500),
+        supabase.from('attempts').select('id,participant_id,round_id,status,score').eq('event_id',eid).order('started_at',{ascending:false}).limit(2000),
         supabase.from('integrity_events').select('id,participant_id,event,occurred_at').eq('event_id',eid).order('occurred_at',{ascending:false}).limit(50),
-        supabase.from('leaderboard_snapshots').select('payload').eq('event_id',eid).order('created_at',{ascending:false}).limit(1).maybeSingle(),
+        supabase.from('leaderboard_snapshots').select('payload,created_at').eq('event_id',eid).order('created_at',{ascending:false}).limit(2),
         supabase.from('finalists').select('id,participant_id,preliminary_score,rank,status').eq('event_id',eid).order('rank'),
         supabase.from('sudden_death_attempts').select('id,question_number,question_id').eq('event_id',eid).order('question_number',{ascending:false}).limit(1).maybeSingle(),
       ]);
       if(re||ae||ie||se||fe||sde)throw(re||ae||ie||se||fe||sde);
       setRounds(r??[]);setAttempts(a??[]);setIntegrity(i??[]);setFinalists(f??[]);setSudden(sd??null);
-      const payload=s?.payload as any;
-      const rows=Array.isArray(payload)?payload:(payload?.rows??payload?.leaderboard??[]);
-      setBoard(normalizeBoard(rows??[]));
+
+      const snapList=snaps??[];
+      const currentRows=rowsFromPayload(snapList[0]?.payload);
+      const prevRows=rowsFromPayload(snapList[1]?.payload);
+      const prevMap=new Map<string,number>();
+      for(const row of prevRows){
+        const pid=row.participant_id!=null?String(row.participant_id):'';
+        if(pid)prevMap.set(pid,Number(row.rank)||0);
+      }
+      setPrevRanks(prevMap);
+
+      const base=normalizeBoard(currentRows);
+      // enrich with movement from previous snapshot; round score filled when publishing with a round
+      const enriched=enrichBoard(base,a??[],null,prevMap);
+      setBoard(enriched);
+
       setSelected(prev=>{
         if(prev){const u=(r??[]).find(x=>x.id===prev.id);if(u)return u}
         return (r??[]).find(x=>x.status==='open')??(r??[])[0]??null;
@@ -177,6 +275,10 @@ function App(){
   },[locked]);
 
   useEffect(()=>{if(selected)void loadRoundQuestions(selected.id).catch(e=>{setMessage(errText(e));setMsgKind('err')})},[selected?.id]);
+
+  const boardForPublish=(roundId?:string|null)=>{
+    return enrichBoard(boardRef.current,attemptsRef.current,roundId??selected?.id,prevRanksRef.current);
+  };
 
   const publish=useCallback(async(state:string,payload:Record<string,unknown>={})=>{
     if(!eventId)return;
@@ -211,11 +313,13 @@ function App(){
       return;
     }
     if(step.kind==='top10'&&r){
-      await publish('ROUND_TOP10',{p_round_id:r.id,p_title:`Round ${r.round_number} · Top 10`,p_top10:normalizeBoard(boardRef.current)});
+      const rows=boardForPublish(r.id);
+      await publish('ROUND_TOP10',{p_round_id:r.id,p_title:`Round ${r.round_number} · Top 10`,p_top10:rows});
       return;
     }
     if(step.kind==='overall'){
-      await publish('LEADERBOARD',{p_title:'Overall leaderboard',p_top10:normalizeBoard(boardRef.current)});
+      const rows=boardForPublish(null);
+      await publish('LEADERBOARD',{p_title:'Overall leaderboard',p_top10:rows});
       return;
     }
     if(step.kind==='waiting')await publish('WAITING',{p_title:'GERiCARE Conference Quiz'});
@@ -289,7 +393,10 @@ function App(){
       }
       const scoreIdx=list.findIndex(s=>s.kind==='top10');
       if(scoreIdx>=0){await goToIndex(scoreIdx,list,selected,roundQs);setTab('projector')}
-      else await publish('ROUND_TOP10',{p_title:`Round ${selected.round_number} · Top 10`,p_top10:normalizeBoard(boardRef.current)});
+      else{
+        const rows=boardForPublish(selected.id);
+        await publish('ROUND_TOP10',{p_title:`Round ${selected.round_number} · Top 10`,p_top10:rows});
+      }
     }
   });
 
@@ -308,6 +415,8 @@ function App(){
     submitted:currentAttempts.filter(a=>['completed','timed_out','recovered'].includes(a.status)).length,
     terminated:currentAttempts.filter(a=>a.status==='terminated').length,
   };
+
+  const displayBoard=selected?enrichBoard(board,attempts,selected.id,prevRanks):board;
 
   const presentManual=(state:string,payload:Record<string,unknown>={})=>
     run(`Projector → ${state}`,()=>publish(state,payload));
@@ -336,9 +445,7 @@ function App(){
               <h2>{step.title}</h2>
               <p>{step.detail}</p>
               {step.blocked&&<p style={{marginTop:8,color:'#fca5a5'}}>{step.blocked}</p>}
-              <div className="cta">
-                {step.primary&&<button type="button" className="btn primary" onClick={doPrimary}>{step.primaryLabel}</button>}
-              </div>
+              <div className="cta">{step.primary&&<button type="button" className="btn primary" onClick={doPrimary}>{step.primaryLabel}</button>}</div>
             </section>
 
             <section className="section">
@@ -349,11 +456,7 @@ function App(){
                     <div className="rn">R{r.round_number}</div>
                     <div>
                       <strong>{r.title}</strong>
-                      <div className="meta">
-                        {r.status}
-                        {r.questions_locked?<span className="tag ok">set ready</span>:<span className="tag warn">no set</span>}
-                        {r.status==='open'&&<span className="tag live">live</span>}
-                      </div>
+                      <div className="meta">{r.status}{r.questions_locked?<span className="tag ok">set ready</span>:<span className="tag warn">no set</span>}{r.status==='open'&&<span className="tag live">live</span>}</div>
                     </div>
                   </button>
                 ))}
@@ -383,13 +486,17 @@ function App(){
 
             <section className="section">
               <h3>Leaderboard</h3>
-              {board.length?(
+              <p className="muted" style={{marginBottom:8}}>▲▼ vs previous overall · Round = this round · Total = cumulative</p>
+              {displayBoard.length?(
                 <div className="list">
-                  {board.slice(0,10).map((b,i)=>(
+                  <div className="row" style={{fontWeight:800,color:'#64748b',fontSize:11}}>
+                    <span># · move</span><span>Name</span><span>Rnd / Tot</span>
+                  </div>
+                  {displayBoard.slice(0,10).map((b,i)=>(
                     <div className="row" key={b.participant_id??i}>
-                      <b>#{b.rank??i+1}</b>
+                      <b>#{b.rank} <span style={{color:b.rank_delta&&b.rank_delta>0?'#16a34a':b.rank_delta&&b.rank_delta<0?'#dc2626':'#94a3b8',fontWeight:700}}>{movementLabel(b.rank_delta,b.prev_rank)}</span></b>
                       <strong>{b.display_name??b.name}</strong>
-                      <span>{b.score}</span>
+                      <span>{b.round_score!=null?b.round_score:'—'} / {b.total_score??b.score}</span>
                     </div>
                   ))}
                 </div>
@@ -418,8 +525,7 @@ function App(){
               <h3>Show settings</h3>
               <div className="actions" style={{marginBottom:10}}>
                 <label style={{fontSize:12,fontWeight:700,display:'flex',alignItems:'center',gap:6}}>
-                  <input type="checkbox" checked={autoFollow} onChange={e=>setAutoFollow(e.target.checked)}/>
-                  Auto-follow Open / Close / Release
+                  <input type="checkbox" checked={autoFollow} onChange={e=>setAutoFollow(e.target.checked)}/> Auto-follow Open / Close / Release
                 </label>
               </div>
               <div className="actions" style={{marginBottom:10}}>
@@ -446,9 +552,7 @@ function App(){
                   <div className="list">
                     {playlist.map((s,i)=>(
                       <button type="button" key={s.id} className={'play-row'+(i===playIdx?' on':'')} onClick={()=>void goToIndex(i,playlist,selected,roundQs)}>
-                        <span>{i===playIdx?'→':'·'}</span>
-                        <strong>{s.label}</strong>
-                        <span className="muted">{s.kind}</span>
+                        <span>{i===playIdx?'→':'·'}</span><strong>{s.label}</strong><span className="muted">{s.kind}</span>
                       </button>
                     ))}
                   </div>
@@ -473,8 +577,8 @@ function App(){
               <div className="actions">
                 <button type="button" className="btn" onClick={()=>void presentManual('WAITING',{p_title:'GERiCARE Conference Quiz'})}>Waiting</button>
                 <button type="button" className="btn" onClick={()=>void presentManual('RULES',{p_title:'How to Play'})}>Rules</button>
-                <button type="button" className="btn" onClick={()=>void presentManual('ROUND_TOP10',{p_title:selected?`Round ${selected.round_number} · Top 10`:'Top 10',p_top10:normalizeBoard(board)})}>Round top 10</button>
-                <button type="button" className="btn" onClick={()=>void presentManual('LEADERBOARD',{p_title:'Overall',p_top10:normalizeBoard(board)})}>Overall</button>
+                <button type="button" className="btn" onClick={()=>void presentManual('ROUND_TOP10',{p_title:selected?`Round ${selected.round_number} · Top 10`:'Top 10',p_top10:boardForPublish(selected?.id)})}>Round top 10</button>
+                <button type="button" className="btn" onClick={()=>void presentManual('LEADERBOARD',{p_title:'Overall',p_top10:boardForPublish(null)})}>Overall</button>
                 <button type="button" className="btn" onClick={()=>void presentManual('FINAL',{p_title:'Grand Final'})}>Final</button>
                 <button type="button" className="btn" onClick={()=>void presentManual('WINNER')}>Winner</button>
               </div>
@@ -493,17 +597,7 @@ function App(){
                 <button type="button" className="btn danger" onClick={()=>void run('Complete event',async()=>{await rpc('complete_event',{p_event_id:eventId});await publish('WINNER')})}>Complete event</button>
               </div>
               <p className="muted" style={{marginTop:12}}>{finalists.length} finalists</p>
-              <div className="list">
-                {finalists.slice(0,10).map(f=>(
-                  <div className="row" key={f.id}>
-                    <b>#{f.rank}</b>
-                    <span>{f.participant_id.slice(0,8)}…</span>
-                    <span>{f.preliminary_score}</span>
-                  </div>
-                ))}
-              </div>
             </section>
-
             <section className="section">
               <h3>Sudden death</h3>
               <div className="actions">
@@ -518,7 +612,6 @@ function App(){
                   await rpc('resolve_sudden_death',{p_sudden_death_id:sudden.id});
                 })}>Resolve</button>
               </div>
-              {sudden&&<p className="muted" style={{marginTop:8}}>Active #{sudden.question_number}</p>}
             </section>
           </>
         )}
