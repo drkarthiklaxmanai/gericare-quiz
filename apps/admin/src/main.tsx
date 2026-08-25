@@ -369,7 +369,7 @@ function App(){
   return (
     <div className="app">
       <header className="topbar">
-        <div><small>GERiCARE</small><h1>Question bank</h1></div>
+        <div><small>GeriCare</small><h1>Question bank</h1></div>
         <div className="pill">{status}</div>
       </header>
 
