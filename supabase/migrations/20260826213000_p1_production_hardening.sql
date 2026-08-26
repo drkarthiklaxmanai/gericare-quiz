@@ -2,6 +2,7 @@
 -- 1) Participant PII/responses are visible only to super admins.
 -- 2) Remove the obsolete automatic result-release delay setting.
 -- 3) Finalist tie-break time is calculated from the same best five rounds that contribute score.
+-- 4) Keep the one-attempt and server-authoritative timer contract explicitly versioned in source.
 
 create or replace function private.require_super_admin(p_event_id uuid)
 returns void
@@ -152,6 +153,58 @@ update public.events
 set settings = coalesce(settings,'{}'::jsonb) - 'result_release_delay_seconds',
     updated_at = clock_timestamp()
 where coalesce(settings,'{}'::jsonb) ? 'result_release_delay_seconds';
+
+create or replace function public.start_quiz_attempt(p_event uuid,p_round uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public','private'
+as $function$
+declare
+  v_uid uuid:=auth.uid();
+  v_participant uuid;
+  v_attempt public.attempts;
+  v_duration int;
+  v_manifest jsonb;
+begin
+  if v_uid is null then raise exception 'not_authenticated'; end if;
+  select id into v_participant from public.event_participants where event_id=p_event and user_id=v_uid;
+  if v_participant is null then raise exception 'not_registered'; end if;
+  if not exists(select 1 from public.events e where e.id=p_event and e.status in ('live','final')) then raise exception 'event_not_live'; end if;
+
+  select coalesce((settings->>'round_duration_seconds')::int,90)
+  into v_duration from public.events where id=p_event;
+
+  if not exists(select 1 from public.rounds r where r.id=p_round and r.event_id=p_event and r.status='open') then raise exception 'round_not_open'; end if;
+  if exists(
+    select 1 from public.attempts a
+    where a.participant_id=v_participant
+      and a.round_id=p_round
+      and a.status in ('active','completed','terminated','timed_out','recovered')
+  ) then raise exception 'attempt_already_used'; end if;
+
+  select jsonb_agg(jsonb_build_object(
+    'question_id',q.id,
+    'position',rq.canonical_order,
+    'option_order',(select jsonb_agg(o.id order by random()) from public.question_options o where o.question_id=q.id)
+  ))
+  into v_manifest
+  from public.round_questions rq
+  join public.questions q on q.id=rq.question_id
+  where rq.round_id=p_round;
+
+  if jsonb_array_length(coalesce(v_manifest,'[]'::jsonb))<>3 then raise exception 'round_requires_three_questions'; end if;
+
+  insert into public.attempts(event_id,round_id,participant_id,status,started_at,deadline_at,question_manifest)
+  values(p_event,p_round,v_participant,'active',clock_timestamp(),clock_timestamp()+make_interval(secs=>v_duration),v_manifest)
+  returning * into v_attempt;
+
+  insert into public.audit_events(event_id,participant_id,round_id,event_type,action,metadata)
+  values(p_event,v_participant,p_round,'round','attempt_started',jsonb_build_object('attempt_id',v_attempt.id));
+
+  return jsonb_build_object('attempt_id',v_attempt.id,'started_at',v_attempt.started_at,'deadline_at',v_attempt.deadline_at,'question_manifest',v_manifest);
+end;
+$function$;
 
 create or replace function public.qualify_finalists(p_event_id uuid)
 returns jsonb
