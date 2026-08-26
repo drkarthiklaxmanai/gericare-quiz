@@ -7,7 +7,11 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf
 const p0 = read('supabase/migrations/20260826200000_p0_competition_correctness.sql')
 const revisions = read('supabase/migrations/20260826202500_allow_answer_revisions_until_finish.sql')
 const p1 = read('supabase/migrations/20260826213000_p1_production_hardening.sql')
+const images = read('supabase/migrations/20260826220000_image_question_support.sql')
 const quizApi = read('supabase/functions/quiz-api/index.ts')
+const projectorMedia = read('supabase/functions/presentation-media/index.ts')
+const participantApp = read('apps/participant/src/App.tsx')
+const finalPanel = read('apps/participant/src/FinalPanel.tsx')
 
 test('preliminary rounds remain server-authoritative at 90 seconds and one attempt per round', () => {
   assert.match(p0, /'round_duration_seconds',\s*90/i)
@@ -49,4 +53,20 @@ test('final qualification uses score and time from the same best five rounds', (
   assert.match(p1, /sum\(score\) filter \(where score_rank<=5\)/i)
   assert.match(p1, /sum\(valid_response_time_ms\) filter \(where score_rank<=5\)/i)
   assert.match(p1, /order by preliminary_score desc, preliminary_time_ms asc/i)
+})
+
+test('image questions stay private and are delivered only in active quiz contexts', () => {
+  assert.match(quizApi, /signedImages/)
+  assert.match(quizApi, /createSignedUrl\(m\.storage_path,3600\)/)
+  assert.match(images, /question media participant active storage read/i)
+  assert.match(images, /a\.status='active'/i)
+  assert.match(images, /fa\.status='active'/i)
+  assert.match(projectorMedia, /media_not_currently_presented/)
+  assert.match(projectorMedia, /presentation_state/)
+})
+
+test('participant and Grand Final UIs render question images', () => {
+  assert.match(participantApp, /QuestionImages media=\{q\.media\}/)
+  assert.match(participantApp, /QuestionImages media=\{r\.media\}/)
+  assert.match(finalPanel, /QuestionImages media=\{media\[q\.id\]\}/)
 })
