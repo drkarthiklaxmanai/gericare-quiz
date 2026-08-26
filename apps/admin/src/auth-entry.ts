@@ -31,15 +31,16 @@ function addSignOut(){
  b.onclick=async()=>{await supabase.auth.signOut();location.reload()};
  document.body.appendChild(b);
 }
-function addViewNav(){
+function addViewNav(role:string){
  if(document.getElementById('gericare-admin-nav'))return;
  const media=new URLSearchParams(location.search).get('view')==='media';
- const a=document.createElement('a');
- a.id='gericare-admin-nav';
- a.textContent=media?'← Question bank':'🖼 Question images';
- a.href=media?location.pathname:`${location.pathname}?view=media`;
- a.style.cssText='position:fixed;left:14px;bottom:14px;z-index:9999;border:1px solid #d8dee8;background:white;color:#6b1244;text-decoration:none;border-radius:10px;padding:9px 12px;font-weight:800;box-shadow:0 4px 18px rgba(15,23,42,.12)';
- document.body.appendChild(a);
+ const wrap=document.createElement('div');
+ wrap.id='gericare-admin-nav';
+ wrap.style.cssText='position:fixed;left:14px;bottom:14px;z-index:9999;display:flex;gap:8px;flex-wrap:wrap;max-width:calc(100vw - 110px)';
+ const link=(text:string,href:string)=>{const a=document.createElement('a');a.textContent=text;a.href=href;a.style.cssText='border:1px solid #d8dee8;background:white;color:#6b1244;text-decoration:none;border-radius:10px;padding:9px 12px;font-weight:800;box-shadow:0 4px 18px rgba(15,23,42,.12);white-space:nowrap';wrap.appendChild(a)};
+ link(media?'← Question bank':'🖼 Question images',media?location.pathname:`${location.pathname}?view=media`);
+ if(role==='super_admin')link('👥 Participants','participants.html');
+ document.body.appendChild(wrap);
 }
 
 if(!url||!key){shell('Admin Console','<p>Supabase environment is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then redeploy.</p>');throw new Error('Supabase environment not configured')}
@@ -74,7 +75,7 @@ async function authorize(){
     document.getElementById('retry')!.onclick=()=>{appLoaded=false;void authorize()};
     return;
    }
-   addViewNav();
+   addViewNav(access.role);
    addSignOut();
   }catch(e){
    appLoaded=false;
