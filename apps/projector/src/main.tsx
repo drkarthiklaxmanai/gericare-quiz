@@ -2,12 +2,232 @@ import React,{useEffect,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {createClient} from '@supabase/supabase-js';
 import './styles.css';
-const url=import.meta.env.VITE_SUPABASE_URL as string|undefined,key=import.meta.env.VITE_SUPABASE_ANON_KEY as string|undefined;
+
+const url=import.meta.env.VITE_SUPABASE_URL as string|undefined;
+const key=import.meta.env.VITE_SUPABASE_ANON_KEY as string|undefined;
 const supabase=url&&key?createClient(url,key):null;
-type DisplayState={state:string;round_number?:number;title?:string;question?:string;options?:string[];answer?:string;explanation?:string;top10?:{rank:number;name:string;score:number}[];updated_at?:string};
-const demo:DisplayState={state:'WAITING',title:'GERiCARE Conference Quiz'};
-function App(){const [view,setView]=useState<DisplayState>(demo),[connected,setConnected]=useState(false);
- useEffect(()=>{if(!supabase)return;const load=async()=>{const {data}=await supabase.from('presentation_state').select('*').order('updated_at',{ascending:false}).limit(1).maybeSingle();if(data)setView(data as DisplayState)};load();const ch=supabase.channel('projector-display').on('postgres_changes',{event:'*',schema:'public',table:'presentation_state'},p=>{if(p.new)setView(p.new as DisplayState)}).subscribe(s=>setConnected(s==='SUBSCRIBED'));return()=>{supabase.removeChannel(ch)}},[]);
- const content=()=>{switch(view.state){case'RULES':return <><small>RULES</small><h1>How to Play</h1><p>Answer each question before your timer expires.</p></>;case'QUESTION':return <><small>ROUND {view.round_number}</small><h2>{view.question}</h2><div className="options">{(view.options??[]).map((x,i)=><div key={i}><b>{String.fromCharCode(65+i)}</b>{x}</div>)}</div></>;case'ANSWER_REVEAL':return <><small>ANSWER</small><h1>{view.answer??'Correct answer'}</h1></>;case'EXPLANATION':return <><small>EXPLANATION</small><h2>{view.explanation}</h2></>;case'ROUND_TOP10':case'LEADERBOARD':return <><small>{view.state==='ROUND_TOP10'?'ROUND TOP 10':'LEADERBOARD'}</small><h1>Leaderboard</h1><div className="board">{(view.top10??[]).map(x=><div><b>#{x.rank}</b><span>{x.name}</span><strong>{x.score}</strong></div>)}</div></>;case'FINAL':return <><small>GRAND FINAL</small><h1>{view.question??'Final'}</h1></>;case'WINNER':return <><small>WINNER</small><h1>{view.title??'Congratulations!'}</h1></>;default:return <><small>GERiCARE</small><h1>{view.title??'Quiz will begin shortly'}</h1><p>Get ready.</p></>}};
- return <main><div className="status">{connected?'LIVE':'RECONNECTING'}</div><section>{content()}</section></main>}
+
+type BoardRow={
+  rank:number;
+  name:string;
+  score:number;
+  total_score?:number;
+  round_score?:number|null;
+  prev_rank?:number|null;
+  rank_delta?:number|null;
+};
+type DisplayState={
+  state:string;
+  round_number?:number;
+  title?:string;
+  question?:string;
+  options?:string[]|unknown;
+  answer?:string;
+  explanation?:string;
+  top10?:unknown;
+};
+
+const demo:DisplayState={state:'WAITING',title:'GeriCare Conference Quiz'};
+
+function asArray(value:unknown):unknown[]{
+  if(Array.isArray(value))return value;
+  if(value&&typeof value==='object'){
+    const o=value as Record<string,unknown>;
+    if(Array.isArray(o.rows))return o.rows;
+    if(Array.isArray(o.leaderboard))return o.leaderboard;
+    if(Array.isArray(o.top10))return o.top10;
+  }
+  return [];
+}
+
+function normalizeBoard(value:unknown):BoardRow[]{
+  return asArray(value).map((row,i)=>{
+    const r=(row&&typeof row==='object'?row:{}) as Record<string,unknown>;
+    const rank=Number(r.rank??i+1)||i+1;
+    const name=String(r.display_name??r.name??'Participant').trim()||'Participant';
+    const total=Number(r.total_score??r.score??0)||0;
+    const roundScore=r.round_score!=null?Number(r.round_score):null;
+    const prev=r.prev_rank!=null?Number(r.prev_rank):null;
+    const delta=r.rank_delta!=null?Number(r.rank_delta):(prev!=null?prev-rank:null);
+    return{rank,name,score:total,total_score:total,round_score:roundScore,prev_rank:prev,rank_delta:delta};
+  });
+}
+
+function normalizeOptions(value:unknown):{key:string;text:string;correct?:boolean}[]{
+  if(!Array.isArray(value))return [];
+  return value.map((x,i)=>{
+    if(typeof x==='string')return{key:String.fromCharCode(65+i),text:x};
+    const o=(x&&typeof x==='object'?x:{}) as Record<string,unknown>;
+    return{
+      key:String(o.key??o.option_key??String.fromCharCode(65+i)),
+      text:String(o.text??o.option_text??o.label??''),
+      correct:!!(o.correct??o.is_correct),
+    };
+  });
+}
+
+function isCorrect(o:{key:string;correct?:boolean},answer?:string){
+  if(o.correct)return true;
+  if(!answer)return false;
+  return answer===o.key||answer.startsWith(o.key+'.')||answer.startsWith(o.key+' ');
+}
+
+function moveEl(delta:number|null|undefined,prev:number|null|undefined){
+  if(prev==null&&(delta==null||delta===0))return <span className="mv new">NEW</span>;
+  if(delta==null||delta===0)return <span className="mv flat">—</span>;
+  if(delta>0)return <span className="mv up">▲{delta}</span>;
+  return <span className="mv down">▼{Math.abs(delta)}</span>;
+}
+
+function App(){
+  const [view,setView]=useState<DisplayState>(demo);
+  const [connected,setConnected]=useState(false);
+
+  useEffect(()=>{
+    if(!supabase)return;
+    const load=async()=>{
+      const {data}=await supabase.from('presentation_state').select('*').order('updated_at',{ascending:false}).limit(1).maybeSingle();
+      if(data)setView(data as DisplayState);
+    };
+    void load();
+    const ch=supabase.channel('projector-display')
+      .on('postgres_changes',{event:'*',schema:'public',table:'presentation_state'},p=>{if(p.new)setView(p.new as DisplayState)})
+      .subscribe(s=>setConnected(s==='SUBSCRIBED'));
+    return()=>{supabase.removeChannel(ch)};
+  },[]);
+
+  const board=normalizeBoard(view.top10);
+  const options=normalizeOptions(view.options);
+  const hasCorrect=options.some(o=>isCorrect(o,view.answer));
+  const showRoundCol=view.state==='ROUND_TOP10'&&board.some(b=>b.round_score!=null);
+
+  const content=()=>{
+    switch(view.state){
+      case'RULES':
+        return (
+          <div className="stage">
+            <div className="kicker">Rules</div>
+            <h1>How to play</h1>
+            <ul className="rules">
+              <li><span>1</span> Join on your phone or tablet</li>
+              <li><span>2</span> Answer before the timer ends</li>
+              <li><span>3</span> One device · fair play</li>
+              <li><span>4</span> Top scores advance</li>
+            </ul>
+          </div>
+        );
+
+      case'QUESTION':{
+        const liveOnly=!options.length;
+        return (
+          <div className="stage">
+            <div className="kicker">{liveOnly?'Live':(view.title??(view.round_number?`Round ${view.round_number}`:'Question'))}</div>
+            {liveOnly?(
+              <div className="hero-card">
+                <h1 style={{whiteSpace:'pre-line',fontSize:'clamp(32px,5vw,72px)'}}>{view.question}</h1>
+                <p className="sub" style={{marginTop:20}}><span className="pulse"/>Devices open — answer now</p>
+              </div>
+            ):(
+              <>
+                <h2 style={{whiteSpace:'pre-line'}}>{view.question}</h2>
+                <div className="options">{options.map((o,i)=><div key={i} className="opt"><span className="key">{o.key}</span><span>{o.text}</span></div>)}</div>
+              </>
+            )}
+          </div>
+        );
+      }
+
+      case'ANSWER_REVEAL':
+        return (
+          <div className="stage">
+            <div className="kicker green">{view.title??'Review'}{view.round_number?` · Round ${view.round_number}`:''}</div>
+            <h2>{view.question}</h2>
+            <div className="options">
+              {options.map((o,i)=>{
+                const ok=isCorrect(o,view.answer);
+                return <div key={i} className={'opt'+(ok?' correct':hasCorrect?' dim':'')}><span className="key">{o.key}</span><span>{o.text}</span></div>;
+              })}
+            </div>
+            {view.answer&&<div className="answer-bar">Correct · {view.answer}</div>}
+            {view.explanation&&<p className="expl">{view.explanation}</p>}
+          </div>
+        );
+
+      case'EXPLANATION':
+        return <div className="stage"><div className="kicker">Explanation</div><h2>{view.explanation}</h2></div>;
+
+      case'ROUND_TOP10':
+      case'LEADERBOARD':
+        return (
+          <div className="stage">
+            <div className="kicker gold">{view.state==='ROUND_TOP10'?'Round top 10':'Overall standings'}</div>
+            <h1 style={{fontSize:'clamp(28px,4.5vw,56px)'}}>{view.title??'Leaderboard'}</h1>
+            <div className={'board'+(showRoundCol?' with-round':'')}>
+              <div className="board-head">
+                <span>#</span>
+                <span></span>
+                <span>Name</span>
+                {showRoundCol&&<span className="num">Round</span>}
+                <span className="num">Total</span>
+              </div>
+              {board.length?board.map(x=>{
+                const cls=x.rank===1?' top':x.rank===2?' top2':x.rank===3?' top3':'';
+                return (
+                  <div className={'board-row'+cls} key={`${x.rank}-${x.name}`}>
+                    <span className="rank">#{x.rank}</span>
+                    <span className="move">{moveEl(x.rank_delta,x.prev_rank)}</span>
+                    <span className="name">{x.name}</span>
+                    {showRoundCol&&<span className="pts round">{x.round_score??0}</span>}
+                    <span className="pts">{x.total_score??x.score}</span>
+                  </div>
+                );
+              }):<div className="empty">Standings will appear after results are released</div>}
+            </div>
+          </div>
+        );
+
+      case'FINAL':
+        return (
+          <div className="stage">
+            <div className="kicker violet">Grand Final</div>
+            <div className="hero-card">
+              <h1>{view.question??view.title??'Final'}</h1>
+              <p className="sub">Top teams · final questions</p>
+            </div>
+          </div>
+        );
+
+      case'WINNER':
+        return (
+          <div className="stage">
+            <div className="kicker gold">Champion</div>
+            <div className="hero-card">
+              <h1>{view.title??'Congratulations!'}</h1>
+              <p className="sub">GeriCare Conference Quiz</p>
+            </div>
+          </div>
+        );
+
+      default:
+        return (
+          <div className="stage">
+            <div className="kicker">GeriCare</div>
+            <div className="hero-card">
+              <h1>{view.title??'Quiz will begin shortly'}</h1>
+              <p className="sub"><span className="pulse"/>Get ready on your devices</p>
+            </div>
+          </div>
+        );
+    }
+  };
+
+  return (
+    <main>
+      <div className="brand">GeriCare</div>
+      <div className={'status'+(connected?' live':'')}>{connected?'LIVE':'RECONNECTING'}</div>
+      {content()}
+    </main>
+  );
+}
+
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

@@ -1,4 +1,4 @@
-# GERiCARE Quiz — Technical Specification
+# GeriCare Quiz — Technical Specification
 
 **Baseline:** v1.0 — 19 Aug 2026
 

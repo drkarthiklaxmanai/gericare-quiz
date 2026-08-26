@@ -1,5 +1,5 @@
-# GERiCARE Conference Quiz Platform
+# GeriCare Conference Quiz Platform
 
-Monorepo scaffold for the GERiCARE conference quiz platform.
+Monorepo scaffold for the GeriCare conference quiz platform.
 
 See `docs/technical-spec.md` for the functional baseline and architecture documents.
