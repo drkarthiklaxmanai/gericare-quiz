@@ -17,3 +17,4 @@
 .reviewMissed{margin:8px 0 0;font-size:13px;color:var(--gc-muted);font-weight:600}
 .answerReview{padding:18px 0;border-top:1px solid #f1e7ed;margin-top:8px}
 .answerReview:first-of-type{border-top:0;margin-top:0}
+.questionMedia{display:grid;gap:10px;margin:12px 0 18px}.questionMedia img{display:block;width:100%;max-height:min(48vh,420px);object-fit:contain;background:#fff;border:1px solid var(--gc-border);border-radius:16px;padding:4px}
