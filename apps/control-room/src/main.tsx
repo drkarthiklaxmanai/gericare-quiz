@@ -11,7 +11,7 @@ const ALLOWED=new Set(['WAITING','RULES','QUESTION','ANSWER_REVEAL','EXPLANATION
 
 type Tab='rounds'|'projector'|'final';
 type Round={id:string;event_id:string;round_number:number;title:string;status:string;questions_locked:boolean};
-type Attempt={id:string;participant_id:string;round_id:string;status:string;score:number};
+type Attempt={id:string;participant_id:string;round_id:string;status:string;score:number;result_released_at?:string|null};
 type Integrity={id:number;participant_id:string|null;event:string;occurred_at:string};
 type Board={
   rank:number;
@@ -120,14 +120,15 @@ async function rpc(name:string,args:Record<string,unknown>={}){
   return data;
 }
 
-function nextStep(r:Round|null,locked:boolean,openOther:Round|undefined){
+function nextStep(r:Round|null,locked:boolean,openOther:Round|undefined,released:boolean){
   if(!r)return{title:'Select a round',detail:'Tap a round below.',primary:undefined as undefined,primaryLabel:undefined as undefined,blocked:undefined as string|undefined};
   if(!locked)return{title:'Take control first',detail:'Required before open/close/release.',primary:'control' as const,primaryLabel:'Take control',blocked:undefined};
   if(!r.questions_locked)return{title:'Questions not frozen',detail:'Admin must lock 3 questions for this round.',primary:undefined,primaryLabel:undefined,blocked:'Admin → freeze set'};
   if(openOther&&openOther.id!==r.id)return{title:`Close R${openOther.round_number} first`,detail:'Only one open round.',primary:undefined,primaryLabel:undefined,blocked:`Select R${openOther.round_number} → Close`};
   if(r.status==='draft'||r.status==='locked')return{title:`Open Round ${r.round_number}`,detail:'Participants can answer; projector can follow.',primary:'open' as const,primaryLabel:'Open round',blocked:undefined};
   if(r.status==='open')return{title:`Close Round ${r.round_number}`,detail:'Then use Projector tab for Q&A / scores show.',primary:'close' as const,primaryLabel:'Close round',blocked:undefined};
-  if(r.status==='closed')return{title:'Release results',detail:'Builds leaderboard (see list below).',primary:'release' as const,primaryLabel:'Release results',blocked:undefined};
+  if(r.status==='closed'&&!released)return{title:'Release results',detail:'Unlocks scores for participants and builds leaderboard.',primary:'release' as const,primaryLabel:'Release results',blocked:undefined};
+  if(r.status==='closed'&&released)return{title:`Round ${r.round_number} results live`,detail:'Participants can see scores & Q&A. Select the next round.',primary:undefined,primaryLabel:undefined,blocked:undefined};
   return{title:`Round ${r.round_number} done`,detail:'Select next round or open Final tab.',primary:undefined,primaryLabel:undefined,blocked:undefined};
 }
 
@@ -334,7 +335,7 @@ function App(){
       const eid=await resolveEvent();
       const [{data:r,error:re},{data:a,error:ae},{data:i,error:ie},{data:snaps,error:se},{data:f,error:fe},{data:sd,error:sde}]=await Promise.all([
         supabase.from('rounds').select('id,event_id,round_number,title,status,questions_locked').eq('event_id',eid).order('round_number'),
-        supabase.from('attempts').select('id,participant_id,round_id,status,score').eq('event_id',eid).order('started_at',{ascending:false}).limit(2000),
+        supabase.from('attempts').select('id,participant_id,round_id,status,score,result_released_at').eq('event_id',eid).order('started_at',{ascending:false}).limit(2000),
         supabase.from('integrity_events').select('id,participant_id,event,occurred_at').eq('event_id',eid).order('occurred_at',{ascending:false}).limit(50),
         supabase.from('leaderboard_snapshots').select('payload,created_at').eq('event_id',eid).order('created_at',{ascending:false}).limit(2),
         supabase.from('finalists').select('id,participant_id,preliminary_score,rank,status').eq('event_id',eid).order('rank'),
@@ -522,7 +523,8 @@ function App(){
   });
 
   const openOther=rounds.find(r=>r.status==='open');
-  const step=nextStep(selected,locked,openOther&&selected&&openOther.id!==selected.id?openOther:undefined);
+  const selectedReleased=!!(selected&&attempts.some(a=>a.round_id===selected.id&&a.result_released_at&&new Date(a.result_released_at).getTime()<=Date.now()));
+  const step=nextStep(selected,locked,openOther&&selected&&openOther.id!==selected.id?openOther:undefined,selectedReleased);
   const doPrimary=()=>{
     if(step.primary==='control')void takeControl();
     if(step.primary==='open')void openRound();
@@ -577,7 +579,7 @@ function App(){
                     <div className="rn">R{r.round_number}</div>
                     <div>
                       <strong>{r.title}</strong>
-                      <div className="meta">{r.status}{r.questions_locked?<span className="tag ok">set ready</span>:<span className="tag warn">no set</span>}{r.status==='open'&&<span className="tag live">live</span>}</div>
+                      <div className="meta">{r.status}{r.questions_locked?<span className="tag ok">set ready</span>:<span className="tag warn">no set</span>}{r.status==='open'&&<span className="tag live">live</span>}{attempts.some(a=>a.round_id===r.id&&a.result_released_at&&new Date(a.result_released_at).getTime()<=Date.now())&&<span className="tag ok">released</span>}</div>
                     </div>
                   </button>
                 ))}
@@ -589,7 +591,7 @@ function App(){
                     <>
                       <button type="button" className="btn" disabled={!selected.questions_locked||!!(openOther&&openOther.id!==selected.id)||selected.status==='open'} onClick={()=>void openRound()}>Open</button>
                       <button type="button" className="btn" disabled={selected.status!=='open'} onClick={()=>void closeRound()}>Close</button>
-                      <button type="button" className="btn" disabled={selected.status!=='closed'&&selected.status!=='open'} onClick={()=>void releaseResults()}>Release</button>
+                      <button type="button" className="btn" disabled={(selected.status!=='closed'&&selected.status!=='open')||selectedReleased} onClick={()=>void releaseResults()}>{selectedReleased?'Released':'Release'}</button>
                     </>
                   )}
                 </div>
