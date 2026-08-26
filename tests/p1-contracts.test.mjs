@@ -9,15 +9,17 @@ const revisions = read('supabase/migrations/20260826202500_allow_answer_revision
 const p1 = read('supabase/migrations/20260826213000_p1_production_hardening.sql')
 const quizApi = read('supabase/functions/quiz-api/index.ts')
 
-test('preliminary rounds remain server-authoritative at 90 seconds', () => {
-  assert.match(p0, /round_duration_seconds[^\n]*90|jsonb_set\([^\n]*round_duration_seconds[^\n]*90/s)
-  assert.match(p0, /attempt_already_used/)
+test('preliminary rounds remain server-authoritative at 90 seconds and one attempt per round', () => {
+  assert.match(p0, /'round_duration_seconds',\s*90/i)
+  assert.match(p1, /coalesce\(\(settings->>'round_duration_seconds'\)::int,90\)/i)
+  assert.match(p1, /attempt_already_used/i)
+  assert.match(p1, /clock_timestamp\(\)\+make_interval\(secs=>v_duration\)/i)
 })
 
-test('round answers are scored from the final saved selections', () => {
+test('round answers are scored from final saved selections and timeout is server-side', () => {
   assert.match(revisions, /create or replace function public\.finish_quiz_attempt/i)
-  assert.match(revisions, /sum\(coalesce\(r\.points_awarded,0\)\)/i)
-  assert.match(revisions, /on conflict\s*\(attempt_id,question_id\)/i)
+  assert.match(revisions, /coalesce\(sum\(case when coalesce\(is_void,false\) then 0 else coalesce\(points_awarded,0\) end\),0\)/i)
+  assert.match(revisions, /status=case when clock_timestamp\(\)>=deadline_at then 'timed_out'/i)
   assert.doesNotMatch(revisions, /response_already_submitted/i)
 })
 
@@ -32,7 +34,7 @@ test('manual round release is the sole participant release source', () => {
 test('integrity termination does not invent an automatic answer release', () => {
   assert.match(p0, /record_integrity_event/i)
   assert.doesNotMatch(p0, /make_interval\s*\([^)]*900|interval\s*'15 minutes'/i)
-  assert.match(p0, /results_released_at/i)
+  assert.match(p0, /select r\.results_released_at into v_round_release/i)
 })
 
 test('participant PII and responses require super admin', () => {
