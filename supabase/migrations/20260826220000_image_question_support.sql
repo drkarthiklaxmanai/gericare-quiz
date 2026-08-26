@@ -1,6 +1,67 @@
--- Image-question support for the projector review flow.
--- Participant delivery uses short-lived signed URLs from quiz-api.
+-- Image-question support.
+-- Participant delivery uses short-lived signed URLs from quiz-api. Active finalists
+-- may also sign media directly for questions in their own final manifest.
 -- Projector delivery uses a presentation-state-gated media proxy, so the private bucket stays private.
+
+-- Participants may read question_media rows only when the question is in their
+-- currently active preliminary or final attempt. Existing admin/editor policy remains unchanged.
+drop policy if exists "question media participant active read" on public.question_media;
+create policy "question media participant active read"
+on public.question_media for select to authenticated
+using (
+  exists (
+    select 1
+    from public.attempts a
+    join public.event_participants ep on ep.id=a.participant_id
+    where ep.user_id=auth.uid()
+      and a.status='active'
+      and exists (
+        select 1 from jsonb_array_elements(a.question_manifest) j
+        where j->>'question_id'=question_media.question_id::text
+      )
+  )
+  or exists (
+    select 1
+    from public.final_attempts fa
+    join public.finalists f on f.id=fa.finalist_id
+    join public.event_participants ep on ep.id=f.participant_id
+    where ep.user_id=auth.uid()
+      and fa.status='active'
+      and (fa.question_manifest->'question_ids') ? question_media.question_id::text
+  )
+);
+
+-- Same restriction at Storage level. Bucket path is event_id/question_id/file.
+drop policy if exists "question media participant active storage read" on storage.objects;
+create policy "question media participant active storage read"
+on storage.objects for select to authenticated
+using (
+  bucket_id='question-media'
+  and (
+    exists (
+      select 1
+      from public.attempts a
+      join public.event_participants ep on ep.id=a.participant_id
+      where ep.user_id=auth.uid()
+        and a.status='active'
+        and a.event_id::text=(storage.foldername(name))[1]
+        and exists (
+          select 1 from jsonb_array_elements(a.question_manifest) j
+          where j->>'question_id'=(storage.foldername(name))[2]
+        )
+    )
+    or exists (
+      select 1
+      from public.final_attempts fa
+      join public.finalists f on f.id=fa.finalist_id
+      join public.event_participants ep on ep.id=f.participant_id
+      where ep.user_id=auth.uid()
+        and fa.status='active'
+        and f.event_id::text=(storage.foldername(name))[1]
+        and (fa.question_manifest->'question_ids') ? (storage.foldername(name))[2]
+    )
+  )
+);
 
 create or replace function public.publish_presentation_state(
   p_event_id uuid,
@@ -24,8 +85,8 @@ begin
  if p_state not in ('WAITING','RULES','QUESTION','ANSWER_REVEAL','EXPLANATION','ROUND_TOP10','LEADERBOARD','FINAL','WINNER') then raise exception 'Invalid presentation state'; end if;
  if p_round_id is not null then select round_number into v_round from public.rounds where id=p_round_id and event_id=p_event_id; end if;
 
- -- Control Room already sends the exact question stem on recap. If it did not
- -- explicitly provide media, attach that question's still images automatically.
+ -- Control Room sends the exact question stem on recap. If it did not explicitly
+ -- provide media, attach that question's still images automatically.
  if jsonb_array_length(v_media)=0 and p_state in ('QUESTION','ANSWER_REVEAL','EXPLANATION') and p_question is not null then
    select coalesce(jsonb_agg(jsonb_build_object(
      'id',qm.id,
