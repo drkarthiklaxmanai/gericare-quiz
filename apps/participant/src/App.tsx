@@ -5,201 +5,61 @@ import { supabase } from './lib/supabase'
 import FinalPanel from './FinalPanel'
 import './styles.css'
 
-type Screen='auth'|'otp'|'register'|'home'|'quiz'|'submitted'|'history'|'leaderboard'
+type Screen='auth'|'otp'|'profile'|'pin-create'|'pin-unlock'|'home'|'quiz'|'submitted'|'history'|'leaderboard'
 type Question={id:string;stem:string;options:{id:string;label:string;text:string;option_key:string}[]}
 type Attempt={id:string;deadline_at:string;questions:Question[]}
 type Participant={id:string;event_id:string;display_name:string}
 type EventInfo={id:string;name:string;status:string;registration_open:boolean}
-type Round={id:string;round_number:number;title:string;status:string;is_optional:boolean;results_released?:boolean}
+type Round={id:string;round_number:number;title:string;status:string;is_optional:boolean}
 type AttemptSummary={round_id:string;status:string;score:number;result_released_at:string|null;submitted_at:string|null}
-type ReviewOpt={key:string;text:string;correct:boolean}
-type HistoryItem={
-  id:string
-  round_id?:string
-  status:string
-  score:number|null
-  result_released_at:string|null
-  released:boolean
-  attempted?:boolean
-  round:{round_number:number;title:string}|null
-  responses?:{
-    question_id:string
-    stem:string
-    selected_option:string|null
-    selected_option_key?:string|null
-    correct_option:string
-    correct_option_key?:string
-    is_correct:boolean|null
-    points_awarded:number|null
-    explanation:string|null
-    options?:ReviewOpt[]
-  }[]
-}
-
-function errText(e:unknown):string{
-  if(e==null)return 'Unknown error'
-  if(typeof e==='string')return e
-  if(e instanceof Error&&e.message)return e.message
-  if(typeof e==='object'){
-    const o=e as Record<string,unknown>
-    const parts=[o.message,o.details,o.hint,o.code].filter(v=>typeof v==='string'&&String(v).trim()).map(String)
-    if(parts.length)return parts.join(' — ')
-  }
-  try{return JSON.stringify(e)}catch{return String(e)}
-}
-
-function isReleased(a:AttemptSummary|undefined):boolean{
-  if(!a?.result_released_at)return false
-  return new Date(a.result_released_at).getTime()<=Date.now()
-}
+type HistoryItem={id:string;round_id:string;status:string;score:number;result_released_at:string|null;released:boolean;round:{round_number:number;title:string}|null;responses?:{question_id:string;stem:string;selected_option:string|null;correct_option:string;is_correct:boolean;points_awarded:number;explanation:string|null}[]}
+type LoginState={profile_complete:boolean;pin_set:boolean;full_name:string|null;institution:string|null;designation:string|null;department:string|null;mobile_e164:string|null}
 
 export default function App(){
  const[screen,setScreen]=useState<Screen>('auth'),[session,setSession]=useState<Session|null>(null),[event,setEvent]=useState<EventInfo|null>(null),[participant,setParticipant]=useState<Participant|null>(null)
- const[email,setEmail]=useState(''),[otp,setOtp]=useState(''),[displayName,setDisplayName]=useState(''),[attempt,setAttempt]=useState<Attempt|null>(null),[current,setCurrent]=useState(0),[answers,setAnswers]=useState<Record<string,string>>({}),[remaining,setRemaining]=useState(600),[message,setMessage]=useState(''),[busy,setBusy]=useState(false)
- const[rounds,setRounds]=useState<Round[]>([]),[roundAttempts,setRoundAttempts]=useState<AttemptSummary[]>([]),[history,setHistory]=useState<HistoryItem[]>([]),[historyRoundId,setHistoryRoundId]=useState<string|null>(null),[leaderboard,setLeaderboard]=useState<any>(null)
+ const[email,setEmail]=useState(''),[otp,setOtp]=useState(''),[attempt,setAttempt]=useState<Attempt|null>(null),[current,setCurrent]=useState(0),[answers,setAnswers]=useState<Record<string,string>>({}),[remaining,setRemaining]=useState(600),[message,setMessage]=useState(''),[busy,setBusy]=useState(false)
+ const[fullName,setFullName]=useState(''),[institution,setInstitution]=useState(''),[designation,setDesignation]=useState(''),[department,setDepartment]=useState(''),[mobile,setMobile]=useState(''),[pin,setPin]=useState(''),[pinConfirm,setPinConfirm]=useState('')
+ const[rounds,setRounds]=useState<Round[]>([]),[roundAttempts,setRoundAttempts]=useState<AttemptSummary[]>([]),[history,setHistory]=useState<HistoryItem[]>([]),[historyRoundId,setHistoryRoundId]=useState<string|null>(null),[leaderboard,setLeaderboard]=useState<any>(null),[now,setNow]=useState(Date.now())
  const questions=useMemo(()=>attempt?.questions??[],[attempt])
- const visibleHistory=useMemo(()=>{
-   if(!historyRoundId)return history
-   return history.filter(h=>h.round_id===historyRoundId)
- },[history,historyRoundId])
- useEffect(()=>{if(!supabase){setScreen('home');setMessage('Demo mode: Supabase is not configured.');return}void supabase.auth.getSession().then(({data})=>{setSession(data.session);if(data.session)void bootstrap()});const{data:l}=supabase.auth.onAuthStateChange((_e,next)=>{setSession(next);if(next)void bootstrap()});return()=>l.subscription.unsubscribe()},[])
- async function bootstrap(){if(!supabase)return;setBusy(true);setMessage('');try{const configured=import.meta.env.VITE_EVENT_ID as string|undefined;let query=supabase.from('events').select('id,name,status,registration_open');if(configured)query=query.eq('id',configured);const{data:ev,error:ee}=await query.limit(1).maybeSingle();if(ee)throw ee;if(!ev)throw Error('No accessible conference event');setEvent(ev);const{data:ep,error:pe}=await supabase.from('event_participants').select('id,event_id,display_name').eq('event_id',ev.id).maybeSingle();if(pe)throw pe;if(ep){setParticipant(ep);setScreen('home');await loadHome(ev.id)}else setScreen('register')}catch(e){setMessage(errText(e))}finally{setBusy(false)}}
- async function loadHome(eventId=event?.id){if(!eventId)return;const r=await quizApi.availableRounds(eventId);if(r.error){setMessage(errText(r.error));return}const d=r.data as any;setRounds(d?.rounds??[]);setRoundAttempts(d?.attempts??[])}
- useEffect(()=>{
-   if(screen!=='home'||!event)return
-   const id=window.setInterval(()=>{void loadHome(event.id)},20000)
-   return()=>window.clearInterval(id)
- },[screen,event?.id])
- async function sendOtp(){if(!supabase)return;setBusy(true);setMessage('');try{const{error}=await supabase.auth.signInWithOtp({email:email.trim(),options:{shouldCreateUser:true}});if(error)throw error;setOtp('');setScreen('otp');setMessage('Enter the 6-digit code from your email.')}catch(e){setMessage(errText(e))}finally{setBusy(false)}}
- async function verifyOtp(){if(!supabase)return;setBusy(true);setMessage('');try{const{error}=await supabase.auth.verifyOtp({email:email.trim(),token:otp.trim(),type:'email'});if(error)throw error;setMessage('Verified. Loading…')}catch(e){setMessage(errText(e))}finally{setBusy(false)}}
- async function register(){if(!supabase||!event)return;setBusy(true);setMessage('');try{const{data,error}=await supabase.rpc('register_for_event',{p_event_id:event.id,p_display_name:displayName.trim()});if(error)throw error;const row=Array.isArray(data)?data[0]:data;setParticipant(row as Participant);setScreen('home');await loadHome(event.id)}catch(e){setMessage(errText(e))}finally{setBusy(false)}}
+ useEffect(()=>{const t=window.setInterval(()=>setNow(Date.now()),1000);return()=>window.clearInterval(t)},[])
+ useEffect(()=>{if(!supabase){setScreen('home');setMessage('Demo mode: Supabase is not configured.');return}void supabase.auth.getSession().then(({data})=>{setSession(data.session);if(data.session)void bootstrap()});const{data:l}=supabase.auth.onAuthStateChange((_e,next)=>{setSession(next);if(next)void bootstrap();else setScreen('auth')});return()=>l.subscription.unsubscribe()},[])
+
+ async function loginState(){if(!supabase)throw Error('Supabase not configured');const{data,error}=await supabase.rpc('participant_login_state');if(error)throw error;return data as LoginState}
+ function unlockKey(uid:string){return `gericare_pin_unlocked:${uid}`}
+ async function bootstrap(){if(!supabase)return;setBusy(true);setMessage('');try{const{data:ud,error:ue}=await supabase.auth.getUser();if(ue||!ud.user)throw ue??Error('Authentication required');const state=await loginState();setFullName(state.full_name??'');setInstitution(state.institution??'');setDesignation(state.designation??'');setDepartment(state.department??'');setMobile(state.mobile_e164?.replace(/^\+91/,'')??'');if(!state.profile_complete){setScreen('profile');return}const recovering=sessionStorage.getItem('gericare_pin_recovery')==='1';if(!state.pin_set||recovering){setPin('');setPinConfirm('');setScreen('pin-create');return}if(sessionStorage.getItem(unlockKey(ud.user.id))!=='1'){setPin('');setScreen('pin-unlock');return}await enterQuiz(state.full_name??'Participant')}catch(e){setMessage(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
+ async function resolveEvent(){if(!supabase)throw Error('Supabase not configured');if(event)return event;const configured=import.meta.env.VITE_EVENT_ID as string|undefined;let query=supabase.from('events').select('id,name,status,registration_open');if(configured)query=query.eq('id',configured);const{data,error}=await query.limit(1).maybeSingle();if(error)throw error;if(!data)throw Error('No accessible conference event');setEvent(data);return data as EventInfo}
+ async function enterQuiz(name=fullName){if(!supabase)return;const ev=await resolveEvent();const{data:ep,error:pe}=await supabase.from('event_participants').select('id,event_id,display_name').eq('event_id',ev.id).maybeSingle();if(pe)throw pe;let p=ep as Participant|null;if(!p){const{data,error}=await supabase.rpc('register_for_event',{p_event_id:ev.id,p_display_name:name.trim()});if(error)throw error;p=(Array.isArray(data)?data[0]:data) as Participant}setParticipant(p);setScreen('home');await loadHome(ev.id)}
+ async function loadHome(eventId=event?.id){if(!eventId)return;const r=await quizApi.availableRounds(eventId);if(r.error){setMessage(r.error.message);return}const d=r.data as any;setRounds(d?.rounds??[]);setRoundAttempts(d?.attempts??[])}
+ async function sendOtp(){if(!supabase)return;setBusy(true);setMessage('');try{const{error}=await supabase.auth.signInWithOtp({email:email.trim(),options:{shouldCreateUser:true}});if(error)throw error;setOtp('');setScreen('otp');setMessage('Enter the 6-digit code from your email.')}catch(e){setMessage(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
+ async function verifyOtp(){if(!supabase)return;setBusy(true);setMessage('');try{const{error}=await supabase.auth.verifyOtp({email:email.trim(),token:otp.trim(),type:'email'});if(error)throw error;setMessage('Verified. Loading…')}catch(e){setMessage(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
+ async function saveProfile(){if(!supabase)return;setBusy(true);setMessage('');try{const{error}=await supabase.rpc('save_participant_profile',{p_full_name:fullName.trim(),p_institution:institution.trim(),p_designation:designation.trim(),p_department:department.trim(),p_mobile:mobile.trim()});if(error)throw error;setPin('');setPinConfirm('');setScreen('pin-create')}catch(e){setMessage(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
+ async function createPin(){if(!supabase)return;if(pin.length!==4||pin!==pinConfirm){setMessage(pin.length!==4?'PIN must be exactly 4 digits.':'PINs do not match.');return}setBusy(true);setMessage('');try{const{data,error}=await supabase.rpc('set_participant_pin',{p_pin:pin});if(error)throw error;if(!(data as any)?.ok)throw Error('Could not save PIN');const{data:ud}=await supabase.auth.getUser();if(ud.user)sessionStorage.setItem(unlockKey(ud.user.id),'1');sessionStorage.removeItem('gericare_pin_recovery');setPin('');setPinConfirm('');await enterQuiz(fullName)}catch(e){setMessage(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
+ async function verifyPin(){if(!supabase||pin.length!==4)return;setBusy(true);setMessage('');try{const{data,error}=await supabase.rpc('verify_participant_pin',{p_pin:pin});if(error)throw error;const result=data as any;if(!result?.ok){if(result?.error==='locked')setMessage('Too many incorrect attempts. PIN entry is locked for 10 minutes.');else setMessage(`Incorrect PIN${typeof result?.remaining_attempts==='number'?`. ${result.remaining_attempts} attempts left.`:''}`);setPin('');return}const{data:ud}=await supabase.auth.getUser();if(ud.user)sessionStorage.setItem(unlockKey(ud.user.id),'1');setPin('');await enterQuiz(fullName)}catch(e){setMessage(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
+ async function forgotPin(){if(!supabase)return;sessionStorage.setItem('gericare_pin_recovery','1');setEmail(session?.user.email??email);setPin('');await supabase.auth.signOut();setSession(null);setParticipant(null);setScreen('auth');setMessage('Verify your email to create a new PIN.')}
  useEffect(()=>{if(screen!=='quiz'||!attempt)return;const tick=()=>setRemaining(Math.max(0,Math.ceil((new Date(attempt.deadline_at).getTime()-Date.now())/1000)));tick();const t=window.setInterval(()=>{const left=Math.max(0,Math.ceil((new Date(attempt.deadline_at).getTime()-Date.now())/1000));setRemaining(left);if(left<=0){window.clearInterval(t);void finish()}},1000);return()=>window.clearInterval(t)},[screen,attempt])
  useEffect(()=>{const f=()=>{if(document.visibilityState==='hidden'&&attempt)void quizApi.integrity(attempt.id,'visibility_hidden')};document.addEventListener('visibilitychange',f);return()=>document.removeEventListener('visibilitychange',f)},[attempt])
- async function start(round:Round){if(!event)return;setBusy(true);setMessage('');const r=await quizApi.startRound(event.id,round.id);setBusy(false);if(r.error){setMessage(errText(r.error));return}const a=r.data as Attempt;setAttempt(a);setCurrent(0);setAnswers({});setRemaining(Math.max(0,Math.ceil((new Date(a.deadline_at).getTime()-Date.now())/1000)));setScreen('quiz')}
- async function choose(optionKey:string){const q=questions[current];setAnswers(v=>({...v,[q.id]:optionKey}));if(attempt){const r=await quizApi.answer(attempt.id,q.id,optionKey);if(r.error)setMessage(errText(r.error))}}
+ async function start(round:Round){if(!event)return;setBusy(true);setMessage('');const r=await quizApi.startRound(event.id,round.id);setBusy(false);if(r.error){setMessage(r.error.message);return}const a=r.data as Attempt;setAttempt(a);setCurrent(0);setAnswers({});setRemaining(Math.max(0,Math.ceil((new Date(a.deadline_at).getTime()-Date.now())/1000)));setScreen('quiz')}
+ async function choose(optionKey:string){const q=questions[current];setAnswers(v=>({...v,[q.id]:optionKey}));if(attempt){const r=await quizApi.answer(attempt.id,q.id,optionKey);if(r.error)setMessage(r.error.message)}}
  async function finish(){if(attempt)await quizApi.finishRound(attempt.id);setScreen('submitted');if(event)await loadHome(event.id)}
- /** @param roundId — if set, only that round's review is shown */
- async function showHistory(roundId?:string){if(!event)return;setBusy(true);const r=await quizApi.history(event.id);setBusy(false);if(r.error){setMessage(errText(r.error));return}setHistory((r.data as any)?.attempts??[]);setHistoryRoundId(roundId??null);setScreen('history')}
- async function showLeaderboard(){if(!event)return;setBusy(true);const r=await quizApi.leaderboard(event.id);setBusy(false);if(r.error){setMessage(errText(r.error));return}setLeaderboard((r.data as any)?.snapshot??null);setScreen('leaderboard')}
- async function signOut(){if(supabase)await supabase.auth.signOut();setSession(null);setParticipant(null);setOtp('');setScreen('auth')}
+ async function showHistory(roundId:string|null=null){if(!event)return;setBusy(true);const r=await quizApi.history(event.id);setBusy(false);if(r.error){setMessage(r.error.message);return}setHistory((r.data as any)?.attempts??[]);setHistoryRoundId(roundId);setScreen('history')}
+ async function showLeaderboard(){if(!event)return;setBusy(true);const r=await quizApi.leaderboard(event.id);setBusy(false);if(r.error){setMessage(r.error.message);return}setLeaderboard((r.data as any)?.snapshot??null);setScreen('leaderboard')}
+ async function signOut(){if(supabase){const{data:ud}=await supabase.auth.getUser();if(ud.user)sessionStorage.removeItem(unlockKey(ud.user.id));await supabase.auth.signOut()}setSession(null);setParticipant(null);setOtp('');setScreen('auth')}
  const q=questions[current],mins=Math.floor(remaining/60).toString().padStart(2,'0'),secs=(remaining%60).toString().padStart(2,'0')
  const attemptFor=(id:string)=>roundAttempts.find(a=>a.round_id===id)
- const boardRows=(()=>{
-   const p=leaderboard?.payload??leaderboard?.rows??leaderboard?.leaderboard??leaderboard
-   return Array.isArray(p)?p:[]
- })()
- const releasedRoundCount=rounds.filter(r=>r.results_released).length
- const filterRound=historyRoundId?rounds.find(r=>r.id===historyRoundId):null
- return <main className="shell"><header><div className="brand">GeriCare <span>QUIZ</span></div><div className="badge">CONFERENCE</div></header>
- {screen==='auth'&&<section className="card hero"><p className="eyebrow">PARTICIPANT SIGN IN</p><h1>Join the conference quiz</h1><input className="field" type="email" placeholder="you@example.com" value={email} onChange={e=>setEmail(e.target.value)}/>{message&&<div className="notice">{message}</div>}<button disabled={busy||!email.includes('@')} onClick={sendOtp}>{busy?'Sending…':'Email me a 6-digit code'}</button></section>}
- {screen==='otp'&&<section className="card hero"><p className="eyebrow">VERIFICATION</p><h1>Enter your code</h1><p>We sent a 6-digit code to <b>{email}</b>.</p><input className="field" inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="6-digit code" value={otp} onChange={e=>setOtp(e.target.value.replace(/\D/g,'').slice(0,6))}/>{message&&<div className="notice">{message}</div>}<button disabled={busy||otp.length!==6} onClick={verifyOtp}>{busy?'Verifying…':'Verify and sign in'}</button><button className="secondary" disabled={busy} onClick={()=>{setScreen('auth');setOtp('');setMessage('')}}>Use a different email</button></section>}
- {screen==='register'&&<section className="card hero"><p className="eyebrow">REGISTRATION</p><h1>{event?.name??'GeriCare Conference Quiz'}</h1><p>Choose the name that should appear on the leaderboard.</p><input className="field" placeholder="Display name" value={displayName} onChange={e=>setDisplayName(e.target.value)}/>{message&&<div className="notice">{message}</div>}<button disabled={busy||displayName.trim().length<2} onClick={register}>Complete Registration</button></section>}
- {screen==='home'&&<><section className="card hero"><p className="eyebrow">PARTICIPANT</p><h1>Welcome{participant?.display_name?`, ${participant.display_name}`:''}</h1><p>Your 10-minute timer starts independently when you press Start.</p>{message&&<div className="notice">{message}</div>}<div className="nav"><button onClick={()=>void showHistory()}>My Quiz{releasedRoundCount>0?` · ${releasedRoundCount} review${releasedRoundCount>1?'s':''}`:''}</button><button className="secondary" onClick={showLeaderboard}>Leaderboard</button></div></section>{event&&<FinalPanel eventId={event.id}/>}<section className="roundList">{rounds.map(r=>{
-   const a=attemptFor(r.id)
-   const canStart=r.status==='open'&&!a
-   const mineReleased=isReleased(a)
-   const roundReleased=!!r.results_released||mineReleased
-   const pending=!!a&&!mineReleased&&!roundReleased
-   let statusText=r.status==='open'?'Open now':r.status
-   if(mineReleased&&a)statusText=`Your score: ${a.score} pts`
-   else if(roundReleased&&!a)statusText='Results available · you did not attempt'
-   else if(roundReleased&&a)statusText=`Your score: ${a.score} pts`
-   else if(pending)statusText='Submitted · results pending'
-   else if(a)statusText=`Status: ${a.status}`
-   return <div className="card roundCard" key={r.id}><div><p className="eyebrow">ROUND {r.round_number}{r.is_optional?' · OPTIONAL':''}</p><h3>{r.title}</h3><p>{statusText}</p></div>{
-     roundReleased
-       ? <button onClick={()=>void showHistory(r.id)}>View review</button>
-       : <button disabled={!canStart||busy} onClick={()=>start(r)}>{pending?'Waiting for release':canStart?'Start':'Unavailable'}</button>
-   }</div>
- })}</section>{session&&<button className="secondary standalone" onClick={signOut}>Sign out</button>}</>}
- {screen==='quiz'&&q&&<section className="card"><div className="quizTop"><span>Question {current+1} of {questions.length}</span><strong>{mins}:{secs}</strong></div><div className="progress"><i style={{width:`${((current+1)/questions.length)*100}%`}}/></div><p className="eyebrow">SINGLE BEST ANSWER</p><h2>{q.stem}</h2>{message&&<div className="notice">{message}</div>}<div className="options">{q.options.map(o=><button key={o.id} className={answers[q.id]===o.option_key?'option selected':'option'} onClick={()=>choose(o.option_key)}><b>{o.label}</b><span>{o.text}</span></button>)}</div><div className="actions">{current>0&&<button className="secondary" onClick={()=>setCurrent(v=>v-1)}>Previous</button>}{current<questions.length-1?<button disabled={!answers[q.id]} onClick={()=>setCurrent(v=>v+1)}>Next</button>:<button disabled={!answers[q.id]} onClick={finish}>Submit Round</button>}</div></section>}
- {screen==='submitted'&&<section className="card hero"><div className="check">✓</div><p className="eyebrow">SUBMITTED</p><h1>Round submitted</h1><p>Your score and the full Q&A with explanations will appear in <b>My Quiz</b> once the host releases results.</p><button onClick={()=>setScreen('home')}>Back to Home</button><button className="secondary" onClick={()=>void showHistory()} style={{marginTop:8}}>Open My Quiz</button></section>}
- {screen==='history'&&<section>
-   <div className="screenHead">
-     <div>
-       <p className="eyebrow">MY QUIZ</p>
-       <h2>{filterRound?`Round ${filterRound.round_number} review`:'Round review'}</h2>
-     </div>
-     <button className="secondary small" onClick={()=>{setHistoryRoundId(null);setScreen('home')}}>Back</button>
-   </div>
-   {historyRoundId&&(
-     <p style={{margin:'0 0 12px',fontSize:13,color:'#64716f'}}>
-       Showing this round only · <button type="button" className="secondary small" style={{display:'inline-block',width:'auto',padding:'6px 10px',marginLeft:6}} onClick={()=>void showHistory()}>All rounds</button>
-     </p>
-   )}
-   {!visibleHistory.length&&<div className="card"><p>{historyRoundId?'No review data for this round yet.':'No released results yet. After the host releases a round, the full Q&A review appears here for everyone.'}</p></div>}
-   {visibleHistory.map(h=>{
-     const attempted=!!h.attempted
-     const scoreLabel=h.released?(attempted?`${h.score??0}`:'—'):'…'
-     const scoreCls=h.released?(attempted?'':' skipped'):' pending'
-     return (
-       <div className="card historyCard" key={h.id}>
-         <div className="historyHead">
-           <div className="ht-left">
-             <p className="ht-eyebrow">ROUND {h.round?.round_number}</p>
-             <h3>{h.round?.title??`Round ${h.round?.round_number}`}</h3>
-             <p className="ht-meta">{h.released?(attempted?'You attempted this round':'You did not attempt this round'):'Pending release'}</p>
-           </div>
-           <div className={'score-pill'+scoreCls}>
-             <span className="sp-num">{scoreLabel}</span>
-             <span className="sp-label">{h.released?(attempted?'PTS':'SKIP'):'WAIT'}</span>
-           </div>
-         </div>
-         <div className="historyBody">
-           {h.released&&!attempted&&(
-             <p className="skip-note">Correct answers and explanations are shown so you can still learn from this round.</p>
-           )}
-           {h.released&&h.responses?.map((r,i)=>{
-             const opts=r.options??[]
-             const picked=r.selected_option_key??null
-             const bannerCls=r.is_correct===true?'ok':r.is_correct===false?'bad':'skip'
-             const bannerText=r.is_correct===true
-               ? `Correct${r.points_awarded!=null?` · ${r.points_awarded} pts`:''}`
-               : r.is_correct===false
-                 ? `Incorrect${r.points_awarded!=null?` · ${r.points_awarded} pts`:''}`
-                 : 'Not attempted'
-             return (
-               <div className="q-card" key={r.question_id}>
-                 <div className="q-top">
-                   <span className="q-num">{i+1}</span>
-                   <p className="q-stem">{r.stem}</p>
-                 </div>
-                 {opts.length>0?(
-                   <div className="rev-opts">
-                     {opts.map(o=>{
-                       const isCorrect=!!o.correct
-                       const isWrongPick=!!picked&&picked===o.key&&!isCorrect
-                       const cls=isCorrect?'correct':isWrongPick?'wrong-pick':(picked||!attempted?'':' dim')
-                       return (
-                         <div className={'rev-opt '+cls} key={o.key}>
-                           <span className="key">{o.key}</span>
-                           <span>{o.text}</span>
-                         </div>
-                       )
-                     })}
-                   </div>
-                 ):(
-                   <>
-                     {attempted&&<div className="rev-banner bad">Your answer: {r.selected_option??'No answer'}</div>}
-                     <div className="rev-banner ok">Correct: {r.correct_option}</div>
-                   </>
-                 )}
-                 <div className={'rev-banner '+bannerCls}>{bannerText}</div>
-                 {r.explanation&&(
-                   <div className="explain">
-                     <span className="ex-label">Explanation</span>
-                     {r.explanation}
-                   </div>
-                 )}
-               </div>
-             )
-           })}
-           {h.released&&!h.responses?.length&&<p className="skip-note">Results released — questions not loaded.</p>}
-         </div>
-       </div>
-     )
-   })}
- </section>}
- {screen==='leaderboard'&&<section><div className="screenHead"><div><p className="eyebrow">STANDINGS</p><h2>Leaderboard</h2></div><button className="secondary small" onClick={()=>setScreen('home')}>Back</button></div><div className="card">{boardRows.length?boardRows.map((x:any,i:number)=><div className="leaderRow" key={x.participant_id??i}><b>#{x.rank??i+1}</b><span>{x.display_name??x.name??'Participant'}</span><strong>{x.score??x.best5_score??0}</strong></div>):<p>No released leaderboard yet.</p>}</div></section>}
+ const releaseSeconds=(a:AttemptSummary)=>a.result_released_at?Math.max(0,Math.ceil((new Date(a.result_released_at).getTime()-now)/1000)):null
+ const releaseLabel=(a:AttemptSummary)=>{const left=releaseSeconds(a);if(left===null)return 'Results pending';if(left<=0)return 'Questions & answers available';const m=Math.floor(left/60),s=left%60;return `Answers available in ${m}:${s.toString().padStart(2,'0')}`}
+ const visibleHistory=historyRoundId?history.filter(h=>h.round_id===historyRoundId):history
+ const profileReady=fullName.trim().length>=2&&institution.trim().length>=2&&designation.trim().length>=2&&department.trim().length>=2&&mobile.replace(/\D/g,'').length>=10
+ return <main className="shell"><header><div className="brand">GERiCARE <span>QUIZ</span></div><div className="badge">CONFERENCE</div></header>
+ {screen==='auth'&&<section className="card hero"><p className="eyebrow">PARTICIPANT SIGN IN</p><h1>Join the conference quiz</h1><p>First sign-in uses email verification. After that, this device will ask only for your 4-digit PIN.</p><input className="field" type="email" placeholder="you@example.com" value={email} onChange={e=>setEmail(e.target.value)}/>{message&&<div className="notice">{message}</div>}<button disabled={busy||!email.includes('@')} onClick={sendOtp}>{busy?'Sending…':'Email me a 6-digit code'}</button></section>}
+ {screen==='otp'&&<section className="card hero"><p className="eyebrow">VERIFICATION</p><h1>Enter your code</h1><p>We sent a 6-digit code to <b>{email}</b>.</p><input className="field pinField" inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="6-digit code" value={otp} onChange={e=>setOtp(e.target.value.replace(/\D/g,'').slice(0,6))}/>{message&&<div className="notice">{message}</div>}<button disabled={busy||otp.length!==6} onClick={verifyOtp}>{busy?'Verifying…':'Verify and continue'}</button><button className="secondary" disabled={busy} onClick={()=>{setScreen('auth');setOtp('');setMessage('')}}>Use a different email</button></section>}
+ {screen==='profile'&&<section className="card hero"><p className="eyebrow">FIRST-TIME REGISTRATION</p><h1>Tell us about you</h1><p>This is required only once.</p><div className="formStack"><input className="field" placeholder="Full name" value={fullName} onChange={e=>setFullName(e.target.value)}/><input className="field" placeholder="Institution / Hospital" value={institution} onChange={e=>setInstitution(e.target.value)}/><input className="field" placeholder="Designation" value={designation} onChange={e=>setDesignation(e.target.value)}/><input className="field" placeholder="Department" value={department} onChange={e=>setDepartment(e.target.value)}/><input className="field" inputMode="tel" placeholder="10-digit mobile number" value={mobile} onChange={e=>setMobile(e.target.value.replace(/\D/g,'').slice(0,10))}/></div>{message&&<div className="notice">{message}</div>}<button disabled={busy||!profileReady} onClick={saveProfile}>{busy?'Saving…':'Continue'}</button></section>}
+ {screen==='pin-create'&&<section className="card hero"><p className="eyebrow">SECURE QUICK LOGIN</p><h1>Create a 4-digit PIN</h1><p>You'll use this PIN on later visits from this device.</p><input className="field pinField" inputMode="numeric" autoComplete="new-password" maxLength={4} placeholder="4-digit PIN" value={pin} onChange={e=>setPin(e.target.value.replace(/\D/g,'').slice(0,4))}/><input className="field pinField" inputMode="numeric" autoComplete="new-password" maxLength={4} placeholder="Confirm PIN" value={pinConfirm} onChange={e=>setPinConfirm(e.target.value.replace(/\D/g,'').slice(0,4))}/>{message&&<div className="notice">{message}</div>}<button disabled={busy||pin.length!==4||pinConfirm.length!==4} onClick={createPin}>{busy?'Saving…':'Save PIN and continue'}</button></section>}
+ {screen==='pin-unlock'&&<section className="card hero pinCard"><p className="eyebrow">WELCOME BACK</p><h1>{fullName||'Participant'}</h1><p>Enter your 4-digit PIN to continue.</p><input className="field pinField" inputMode="numeric" autoComplete="current-password" maxLength={4} autoFocus placeholder="••••" value={pin} onChange={e=>setPin(e.target.value.replace(/\D/g,'').slice(0,4))} onKeyDown={e=>{if(e.key==='Enter'&&pin.length===4)void verifyPin()}}/>{message&&<div className="notice">{message}</div>}<button disabled={busy||pin.length!==4} onClick={verifyPin}>{busy?'Checking…':'Continue'}</button><button className="secondary" disabled={busy} onClick={forgotPin}>Forgot PIN / use email</button></section>}
+ {screen==='home'&&<><section className="card hero"><p className="eyebrow">PARTICIPANT</p><h1>Welcome{participant?.display_name?`, ${participant.display_name}`:''}</h1><p>Your 10-minute timer starts independently when you press Start.</p>{message&&<div className="notice">{message}</div>}<div className="nav"><button onClick={()=>showHistory(null)}>My Quiz</button><button className="secondary" onClick={showLeaderboard}>Leaderboard</button></div></section>{event&&<FinalPanel eventId={event.id}/>}<section className="roundList">{rounds.map(r=>{const a=attemptFor(r.id);const canStart=r.status==='open'&&!a;const released=!!a&&releaseSeconds(a)===0;return <div className="card roundCard" key={r.id}><div><p className="eyebrow">ROUND {r.round_number}{r.is_optional?' · OPTIONAL':''}</p><h3>{r.title}</h3><p>{a?releaseLabel(a):r.status==='open'?'Open now':r.status}</p></div>{a?<button disabled={!released||busy} onClick={()=>showHistory(r.id)}>{released?'View questions & answers':releaseLabel(a)}</button>:<button disabled={!canStart||busy} onClick={()=>start(r)}>{canStart?'Start':'Unavailable'}</button>}</div>})}</section>{session&&<button className="secondary standalone" onClick={signOut}>Sign out</button>}</>}
+ {screen==='quiz'&&q&&<section className="card"><div className="quizTop"><span>Question {current+1} of {questions.length}</span><strong>{mins}:{secs}</strong></div><div className="progress"><i style={{width:`${((current+1)/questions.length)*100}%`}}/></div><p className="eyebrow">SINGLE BEST ANSWER</p><h2>{q.stem}</h2><div className="options">{q.options.map(o=><button key={o.id} className={answers[q.id]===o.option_key?'option selected':'option'} onClick={()=>choose(o.option_key)}><b>{o.label}</b><span>{o.text}</span></button>)}</div><div className="actions">{current>0&&<button className="secondary" onClick={()=>setCurrent(v=>v-1)}>Previous</button>}{current<questions.length-1?<button disabled={!answers[q.id]} onClick={()=>setCurrent(v=>v+1)}>Next</button>:<button disabled={!answers[q.id]} onClick={finish}>Submit Round</button>}</div></section>}
+ {screen==='submitted'&&<section className="card hero"><div className="check">✓</div><p className="eyebrow">SUBMITTED</p><h1>Round submitted</h1><p>Your score, questions and answers will unlock automatically after the release window.</p><button onClick={()=>setScreen('home')}>Back to Home</button></section>}
+ {screen==='history'&&<section><div className="screenHead"><div><p className="eyebrow">MY QUIZ</p><h2>{historyRoundId?'Questions & answers':'Round history'}</h2></div><button className="secondary small" onClick={()=>{setHistoryRoundId(null);setScreen('home')}}>Back</button></div>{visibleHistory.map(h=><div className="card historyCard" key={h.id}><div className="historyTop"><div><b>Round {h.round?.round_number}</b><span>{h.round?.title}</span></div><strong>{h.released?`${h.score} pts`:'Pending release'}</strong></div>{h.released&&h.responses?.map((r,i)=><div className="answerReview" key={r.question_id}><b>{i+1}. {r.stem}</b><p className={r.is_correct?'correct':'wrong'}>{r.is_correct?'✓ Correct':'✕ Incorrect'} · Your answer: {r.selected_option??'No answer'}</p>{!r.is_correct&&<p>Correct answer: {r.correct_option}</p>}{r.explanation&&<small>{r.explanation}</small>}</div>)}</div>)}</section>}
+ {screen==='leaderboard'&&<section><div className="screenHead"><div><p className="eyebrow">STANDINGS</p><h2>Leaderboard</h2></div><button className="secondary small" onClick={()=>setScreen('home')}>Back</button></div><div className="card">{leaderboard?.payload?.length?leaderboard.payload.map((x:any,i:number)=><div className="leaderRow" key={x.participant_id??i}><b>#{x.rank??i+1}</b><span>{x.display_name??x.name??'Participant'}</span><strong>{x.score??x.best5_score??0}</strong></div>):<p>No released leaderboard yet.</p>}</div></section>}
  </main>
 }
