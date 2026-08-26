@@ -18,10 +18,17 @@ function normalizeBoard(value:unknown):BoardRow[]{return asArray(value).map((row
 function normalizeOptions(value:unknown):{key:string;text:string;correct?:boolean}[]{if(!Array.isArray(value))return [];return value.map((x,i)=>{if(typeof x==='string')return{key:String.fromCharCode(65+i),text:x};const o=(x&&typeof x==='object'?x:{}) as Record<string,unknown>;return{key:String(o.key??o.option_key??String.fromCharCode(65+i)),text:String(o.text??o.option_text??o.label??''),correct:!!(o.correct??o.is_correct)}})}
 function normalizeMedia(value:unknown):MediaItem[]{if(!Array.isArray(value))return [];return value.flatMap(x=>{if(!x||typeof x!=='object')return[];const o=x as Record<string,unknown>;const p=String(o.storage_path??'');return p?[{id:o.id?String(o.id):undefined,storage_path:p,mime_type:o.mime_type?String(o.mime_type):null,alt:o.alt?String(o.alt):'Question image'}]:[]})}
 function mediaUrl(eventId:string|undefined,path:string){if(!url||!eventId)return'';return `${url}/functions/v1/presentation-media?event_id=${encodeURIComponent(eventId)}&path=${encodeURIComponent(path)}`}
+function currentQuestionMediaUrl(eventId:string|undefined,question:string|undefined){if(!url||!eventId||!question)return'';return `${url}/functions/v1/presentation-media?event_id=${encodeURIComponent(eventId)}&question=${encodeURIComponent(question)}`}
 function isCorrect(o:{key:string;correct?:boolean},answer?:string){if(o.correct)return true;if(!answer)return false;return answer===o.key||answer.startsWith(o.key+'.')||answer.startsWith(o.key+' ')}
 function moveEl(delta:number|null|undefined,prev:number|null|undefined){if(prev==null&&(delta==null||delta===0))return <span className="mv new">NEW</span>;if(delta==null||delta===0)return <span className="mv flat">—</span>;if(delta>0)return <span className="mv up">▲{delta}</span>;return <span className="mv down">▼{Math.abs(delta)}</span>}
 
-function MediaBlock({view}:{view:DisplayState}){const media=normalizeMedia(view.media);if(!media.length)return null;return <div style={{display:'grid',gridTemplateColumns:media.length>1?'repeat(2,minmax(0,1fr))':'1fr',gap:16,margin:'18px 0 24px'}}>{media.map((m,i)=><img key={m.id??i} src={mediaUrl(view.event_id,m.storage_path)} alt={m.alt||'Question image'} style={{width:'100%',maxHeight:'42vh',objectFit:'contain',borderRadius:18,background:'#fff',padding:6}}/>)}</div>}
+function MediaBlock({view}:{view:DisplayState}){
+ const media=normalizeMedia(view.media);
+ if(media.length)return <div style={{display:'grid',gridTemplateColumns:media.length>1?'repeat(2,minmax(0,1fr))':'1fr',gap:16,margin:'18px 0 24px'}}>{media.map((m,i)=><img key={m.id??i} src={mediaUrl(view.event_id,m.storage_path)} alt={m.alt||'Question image'} style={{width:'100%',maxHeight:'42vh',objectFit:'contain',borderRadius:18,background:'#fff',padding:6}}/>)}</div>;
+ const inferred=currentQuestionMediaUrl(view.event_id,view.question);
+ if(!inferred)return null;
+ return <div style={{margin:'18px 0 24px'}}><img src={inferred} alt="Question image" onError={e=>{(e.currentTarget.parentElement as HTMLElement).style.display='none'}} style={{width:'100%',maxHeight:'42vh',objectFit:'contain',borderRadius:18,background:'#fff',padding:6}}/></div>
+}
 
 function App(){
  const[view,setView]=useState<DisplayState>(demo);const[connected,setConnected]=useState(false);
