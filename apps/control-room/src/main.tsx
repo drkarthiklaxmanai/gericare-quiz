@@ -13,6 +13,7 @@ type Tab='rounds'|'projector'|'final';
 type Round={id:string;event_id:string;round_number:number;title:string;status:string;questions_locked:boolean};
 type Attempt={id:string;participant_id:string;round_id:string;status:string;score:number;result_released_at?:string|null};
 type Integrity={id:number;participant_id:string|null;event:string;occurred_at:string};
+type Participant={id:string;display_name:string};
 type Board={
   rank:number;
   participant_id?:string;
@@ -263,6 +264,7 @@ function App(){
   const[rounds,setRounds]=useState<Round[]>([]);
   const[attempts,setAttempts]=useState<Attempt[]>([]);
   const[integrity,setIntegrity]=useState<Integrity[]>([]);
+  const[participants,setParticipants]=useState<Participant[]>([]);
   const[board,setBoard]=useState<Board[]>([]);
   const[prevRanks,setPrevRanks]=useState<Map<string,number>>(new Map());
   const[finalists,setFinalists]=useState<Finalist[]>([]);
@@ -333,16 +335,17 @@ function App(){
     if(!supabase){setMessage('Configure Supabase');setMsgKind('err');return}
     try{
       const eid=await resolveEvent();
-      const [{data:r,error:re},{data:a,error:ae},{data:i,error:ie},{data:snaps,error:se},{data:f,error:fe},{data:sd,error:sde}]=await Promise.all([
+      const [{data:r,error:re},{data:a,error:ae},{data:i,error:ie},{data:snaps,error:se},{data:f,error:fe},{data:sd,error:sde},{data:parts,error:pe}]=await Promise.all([
         supabase.from('rounds').select('id,event_id,round_number,title,status,questions_locked').eq('event_id',eid).order('round_number'),
         supabase.from('attempts').select('id,participant_id,round_id,status,score,result_released_at').eq('event_id',eid).order('started_at',{ascending:false}).limit(2000),
         supabase.from('integrity_events').select('id,participant_id,event,occurred_at').eq('event_id',eid).order('occurred_at',{ascending:false}).limit(50),
         supabase.from('leaderboard_snapshots').select('payload,created_at').eq('event_id',eid).order('created_at',{ascending:false}).limit(2),
         supabase.from('finalists').select('id,participant_id,preliminary_score,rank,status').eq('event_id',eid).order('rank'),
         supabase.from('sudden_death_attempts').select('id,question_number,question_id').eq('event_id',eid).order('question_number',{ascending:false}).limit(1).maybeSingle(),
+        supabase.from('event_participants').select('id,display_name').eq('event_id',eid),
       ]);
-      if(re||ae||ie||se||fe||sde)throw(re||ae||ie||se||fe||sde);
-      setRounds(r??[]);setAttempts(a??[]);setIntegrity(i??[]);setFinalists(f??[]);setSudden(sd??null);
+      if(re||ae||ie||se||fe||sde||pe)throw(re||ae||ie||se||fe||sde||pe);
+      setRounds(r??[]);setAttempts(a??[]);setIntegrity(i??[]);setFinalists(f??[]);setSudden(sd??null);setParticipants(parts??[]);
 
       const snapList=snaps??[];
       const currentRows=rowsFromPayload(snapList[0]?.payload);
@@ -532,6 +535,7 @@ function App(){
     if(step.primary==='release')void releaseResults();
   };
 
+  const nameByPid=new Map(participants.map(p=>[p.id,p.display_name||'Participant']));
   const currentAttempts=selected?attempts.filter(a=>a.round_id===selected.id):[];
   const counts={
     active:currentAttempts.filter(a=>a.status==='active').length,
@@ -633,7 +637,7 @@ function App(){
                   <div className="row" key={x.id}>
                     <span>{new Date(x.occurred_at).toLocaleTimeString()}</span>
                     <strong>{x.event}</strong>
-                    <span>{x.participant_id?.slice(0,8)??'—'}</span>
+                    <span>{(x.participant_id&&nameByPid.get(x.participant_id))||(x.participant_id?x.participant_id.slice(0,8):'—')}</span>
                   </div>
                 ))}
                 {!integrity.length&&<p className="muted">No flags</p>}
