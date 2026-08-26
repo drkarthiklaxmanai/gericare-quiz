@@ -114,6 +114,53 @@ function enrichBoard(
   });
 }
 
+function boardFromAttempts(
+  attempts:Attempt[],
+  nameByPid:Map<string,string>,
+  roundId:string|null|undefined,
+  prevRankByParticipant:Map<string,number>,
+):Board[]{
+  const totalByP=new Map<string,number>();
+  const roundByP=new Map<string,number>();
+  for(const a of attempts){
+    const s=Number(a.score)||0;
+    totalByP.set(a.participant_id,(totalByP.get(a.participant_id)??0)+s);
+    if(roundId&&a.round_id===roundId){
+      roundByP.set(a.participant_id,Math.max(roundByP.get(a.participant_id)??0,s));
+    }
+  }
+  const ids=roundId?[...roundByP.keys()]:[...totalByP.keys()];
+  return ids
+    .map(pid=>{
+      const total=totalByP.get(pid)??0;
+      const round_score=roundId?(roundByP.get(pid)??0):undefined;
+      const prev=prevRankByParticipant.has(pid)?prevRankByParticipant.get(pid)!:null;
+      return{
+        participant_id:pid,
+        display_name:nameByPid.get(pid)??'Participant',
+        name:nameByPid.get(pid)??'Participant',
+        score:roundId?(round_score??0):total,
+        total_score:total,
+        round_score,
+        prev_rank:prev,
+        rank:0,
+        rank_delta:null as number|null,
+      } as Board;
+    })
+    .sort((a,b)=>{
+      if(roundId){
+        const d=(b.round_score??0)-(a.round_score??0);
+        if(d!==0)return d;
+      }
+      return (b.total_score??0)-(a.total_score??0);
+    })
+    .map((r,i)=>{
+      const rank=i+1;
+      const prev=r.prev_rank??null;
+      return{...r,rank,rank_delta:prev!=null?prev-rank:null};
+    });
+}
+
 async function rpc(name:string,args:Record<string,unknown>={}){
   if(!supabase)throw Error('Supabase not configured');
   const{data,error}=await supabase.rpc(name,args);
@@ -357,9 +404,14 @@ function App(){
       }
       setPrevRanks(prevMap);
 
-      const base=normalizeBoard(currentRows);
-      const enriched=enrichBoard(base,a??[],null,prevMap);
-      setBoard(enriched);
+      const nameMap=new Map((parts??[]).map((p:any)=>[String(p.id),String(p.display_name||'Participant')]));
+      let base=normalizeBoard(currentRows);
+      if(base.length){
+        base=enrichBoard(base,a??[],null,prevMap);
+      }else{
+        base=boardFromAttempts(a??[],nameMap,null,prevMap);
+      }
+      setBoard(base);
 
       setSelected(prev=>{
         if(prev){const u=(r??[]).find(x=>x.id===prev.id);if(u)return u}
@@ -402,7 +454,11 @@ function App(){
   },[]);
 
   const boardForPublish=(roundId?:string|null)=>{
-    return enrichBoard(boardRef.current,attemptsRef.current,roundId??selected?.id,prevRanksRef.current);
+    const rid=roundId??selected?.id;
+    const fromSnap=enrichBoard(boardRef.current,attemptsRef.current,rid,prevRanksRef.current);
+    if(fromSnap.length)return fromSnap;
+    const nameMap=new Map(participants.map(p=>[p.id,p.display_name||'Participant']));
+    return boardFromAttempts(attemptsRef.current,nameMap,rid,prevRanksRef.current);
   };
 
   const publish=useCallback(async(state:string,payload:Record<string,unknown>={})=>{
@@ -543,7 +599,12 @@ function App(){
     terminated:currentAttempts.filter(a=>a.status==='terminated').length,
   };
 
-  const displayBoard=selected?enrichBoard(board,attempts,selected.id,prevRanks):board;
+  const displayBoard=(()=>{
+    if(!selected)return board.length?board:boardFromAttempts(attempts,nameByPid,null,prevRanks);
+    const enriched=enrichBoard(board,attempts,selected.id,prevRanks);
+    if(enriched.length)return enriched;
+    return boardFromAttempts(attempts,nameByPid,selected.id,prevRanks);
+  })();
 
   const presentManual=(state:string,payload:Record<string,unknown>={})=>
     run(`Projector → ${state}`,()=>publish(state,payload));
@@ -627,7 +688,7 @@ function App(){
                     </div>
                   ))}
                 </div>
-              ):<p className="muted">Appears after you release results.</p>}
+              ):<p className="muted">No scores yet for this round. Submit answers, then Release results.</p>}
             </section>
 
             <section className="section">
