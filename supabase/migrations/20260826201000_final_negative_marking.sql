@@ -22,15 +22,15 @@ declare
   v_time bigint;
   v_pos smallint;
 begin
-  select fa.*, f.event_id
-  into v_f, v_event_id
+  select fa.*
+  into v_f
   from final_attempts fa
-  join finalists f on f.id=fa.finalist_id
-  join event_participants ep on ep.id=f.participant_id
   where fa.id=p_final_attempt
   for update;
 
   if v_f.id is null then raise exception 'final_attempt_not_found'; end if;
+  select f.event_id into v_event_id from finalists f where f.id=v_f.finalist_id;
+  if v_event_id is null then raise exception 'finalist_not_found'; end if;
   if not exists(select 1 from finalists f join event_participants ep on ep.id=f.participant_id where f.id=v_f.finalist_id and ep.user_id=v_uid) then raise exception 'forbidden'; end if;
   if v_f.status<>'active' or v_submitted>v_f.deadline_at then raise exception 'final_expired'; end if;
   if p_option not in ('A','B','C','D') then raise exception 'invalid_option'; end if;
