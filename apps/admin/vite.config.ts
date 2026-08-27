@@ -11,6 +11,7 @@ export default defineConfig({
         main: resolve(__dirname, 'index.html'),
         rehearsal: resolve(__dirname, 'rehearsal.html'),
         participants: resolve(__dirname, 'participants.html'),
+        timing: resolve(__dirname, 'timing.html'),
       },
     },
   },
