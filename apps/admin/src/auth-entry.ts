@@ -33,13 +33,19 @@ function addSignOut(){
 }
 function addViewNav(role:string){
  if(document.getElementById('gericare-admin-nav'))return;
- const media=new URLSearchParams(location.search).get('view')==='media';
+ const view=new URLSearchParams(location.search).get('view');
+ const media=view==='media';
+ const timing=view==='timing';
  const wrap=document.createElement('div');
  wrap.id='gericare-admin-nav';
  wrap.style.cssText='position:fixed;left:14px;bottom:14px;z-index:9999;display:flex;gap:8px;flex-wrap:wrap;max-width:calc(100vw - 110px)';
  const link=(text:string,href:string)=>{const a=document.createElement('a');a.textContent=text;a.href=href;a.style.cssText='border:1px solid #d8dee8;background:white;color:#6b1244;text-decoration:none;border-radius:10px;padding:9px 12px;font-weight:800;box-shadow:0 4px 18px rgba(15,23,42,.12);white-space:nowrap';wrap.appendChild(a)};
- link(media?'← Question bank':'🖼 Question images',media?location.pathname:`${location.pathname}?view=media`);
- if(role==='super_admin'){link('👥 Participants','participants.html');link('⏱ Quiz timers','timing.html')}
+ if(media||timing)link('← Question bank',location.pathname);
+ else link('🖼 Question images',`${location.pathname}?view=media`);
+ if(role==='super_admin'){
+   link('👥 Participants','participants.html');
+   if(!timing)link('⏱ Quiz timers',`${location.pathname}?view=timing`);
+ }
  document.body.appendChild(wrap);
 }
 
@@ -63,11 +69,17 @@ async function authorize(){
     return;
    }
    if(appLoaded)return;
+   const view=new URLSearchParams(location.search).get('view');
+   if(view==='timing'&&access.role!=='super_admin'){
+     shell('Access denied','<p>Quiz timers can be changed only by a super admin.</p>');
+     return;
+   }
    appLoaded=true;
    root.innerHTML='';
    try{
-    const media=new URLSearchParams(location.search).get('view')==='media';
-    if(media)await import('./media-admin.tsx');else await import('./main.tsx');
+    if(view==='media')await import('./media-admin.tsx');
+    else if(view==='timing')await import('./timing-admin.tsx');
+    else await import('./main.tsx');
    }catch(e){
     appLoaded=false;
     const msg=e instanceof Error?e.message:String(e);
