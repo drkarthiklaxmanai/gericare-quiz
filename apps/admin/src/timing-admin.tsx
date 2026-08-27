@@ -9,6 +9,14 @@ const configuredEvent=import.meta.env.VITE_EVENT_ID as string|undefined;
 const sb=createClient(url,key);
 
 type TimerData={prelim_seconds?:number;final_seconds?:number};
+function errText(e:unknown){
+ if(e instanceof Error)return e.message;
+ if(e&&typeof e==='object'){
+  const o=e as Record<string,unknown>;
+  return [o.message,o.details,o.hint,o.code].filter(Boolean).map(String).join(' — ')||JSON.stringify(o);
+ }
+ return String(e);
+}
 
 function App(){
  const[eventId,setEventId]=useState(configuredEvent??'');
@@ -44,7 +52,7 @@ function App(){
   }finally{setLoading(false)}
  };
 
- useEffect(()=>{void load().catch(e=>setMsg(e instanceof Error?e.message:String(e)))},[]);
+ useEffect(()=>{void load().catch(e=>setMsg(errText(e)))},[]);
 
  const save=async()=>{
   if(!eventId||prelim==null||finalSec==null)return;
@@ -55,15 +63,15 @@ function App(){
    const saved=(data??{}) as TimerData;
    const savedPrelim=Number(saved.prelim_seconds??prelim);
    const savedFinal=Number(saved.final_seconds??finalSec);
-   setPrelim(savedPrelim);setFinalSec(savedFinal);dirty.current=false;
    const{data:verify,error:ve}=await sb.rpc('get_quiz_timers',{p_event_id:eventId});
    if(ve)throw ve;
    const persisted=(verify??{}) as TimerData;
    const persistedPrelim=Number(persisted.prelim_seconds??savedPrelim);
    const persistedFinal=Number(persisted.final_seconds??savedFinal);
-   setPrelim(persistedPrelim);setFinalSec(persistedFinal);
-   setMsg(`Saved. Prelims ${persistedPrelim}s · Final ${persistedFinal}s`);
-  }catch(e){setMsg(e instanceof Error?e.message:String(e))}
+   if(persistedPrelim!==savedPrelim||persistedFinal!==savedFinal)throw Error(`Timer did not persist. Server returned ${persistedPrelim}s / ${persistedFinal}s.`);
+   setPrelim(persistedPrelim);setFinalSec(persistedFinal);dirty.current=false;
+   setMsg(`Saved permanently. Prelims ${persistedPrelim}s · Final ${persistedFinal}s`);
+  }catch(e){setMsg(`Save failed: ${errText(e)}`)}
   finally{setBusy(false)}
  };
 
@@ -72,7 +80,7 @@ function App(){
  return <div className="app">
   <header className="topbar"><div><small>GERICARE</small><h1>Quiz timers</h1></div><div className="pill">Server-authoritative</div></header>
   <div className="wrap"><div className="card" style={{maxWidth:620,margin:'0 auto'}}>
-   <p className="hint">These durations are read by the backend when a new preliminary round or final starts. Changing them does not alter an attempt already in progress.</p>
+   <p className="hint">These durations are read by the backend when a new preliminary round or final starts. Existing attempts keep their original deadline.</p>
    <div className="section" style={{display:'grid',gap:18}}>
     <label><b>Preliminary round</b><p className="hint">All 3 questions together. Allowed: 30 seconds to 15 minutes.</p><div style={{display:'flex',gap:10,alignItems:'center'}}><input className="search" type="number" min={30} max={900} disabled={loading} value={prelim??''} onChange={e=>{dirty.current=true;setPrelim(e.target.value===''?null:Number(e.target.value))}}/><span>seconds</span></div></label>
     <label><b>Final</b><p className="hint">All final questions together. Allowed: 1 to 60 minutes.</p><div style={{display:'flex',gap:10,alignItems:'center'}}><input className="search" type="number" min={60} max={3600} disabled={loading} value={finalSec??''} onChange={e=>{dirty.current=true;setFinalSec(e.target.value===''?null:Number(e.target.value))}}/><span>seconds</span></div></label>
