@@ -37,7 +37,7 @@ begin
  where id=p_event_id;
  if not found then raise exception 'event_not_found'; end if;
  insert into public.audit_events(event_id,actor_user_id,event_type,action,metadata)
- values(p_event_id,auth.uid(),'settings','timers_updated',jsonb_build_object('prelim_seconds',p_prelim_seconds,'final_seconds',p_final_seconds));
+ values(p_event_id,auth.uid(),'admin','timers_updated',jsonb_build_object('prelim_seconds',p_prelim_seconds,'final_seconds',p_final_seconds));
  return jsonb_build_object('ok',true,'prelim_seconds',p_prelim_seconds,'final_seconds',p_final_seconds);
 end;$function$;
 
