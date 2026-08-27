@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 const cors={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Headers":"authorization, x-client-info, apikey, content-type","Access-Control-Allow-Methods":"POST, OPTIONS"};
 const json=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{...cors,"content-type":"application/json"}});
 type ManifestItem={question_id:string;position:number;option_order:string[]};
+type ImageMedia={id:string;url:string;mime_type:string|null;alt:string};
 
 Deno.serve(async(req:Request)=>{
   if(req.method==="OPTIONS")return new Response("ok",{headers:cors});
@@ -15,6 +16,23 @@ Deno.serve(async(req:Request)=>{
   const adminClient=createClient(url,service,{auth:{persistSession:false}});
   const{data:ud,error:ue}=await userClient.auth.getUser();if(ue||!ud.user)return json({error:"unauthorized"},401);
   const uid=ud.user.id;
+
+  const signedImages=async(qids:string[])=>{
+    const out=new Map<string,ImageMedia[]>();
+    if(!qids.length)return out;
+    const{data:rows,error}=await adminClient.from("question_media").select("id,question_id,storage_path,mime_type,metadata,sort_order").in("question_id",qids).eq("media_type","image").order("sort_order");
+    if(error)throw error;
+    for(const m of rows??[]){
+      const{data:s,error:se}=await adminClient.storage.from("question-media").createSignedUrl(m.storage_path,3600);
+      if(se||!s?.signedUrl)continue;
+      const alt=String((m.metadata as any)?.alt??(m.metadata as any)?.original_name??"Question image");
+      const list=out.get(m.question_id)??[];
+      list.push({id:m.id,url:s.signedUrl,mime_type:m.mime_type??null,alt});
+      out.set(m.question_id,list);
+    }
+    return out;
+  };
+
   try{
     const body=await req.json();const action=body?.action;
     if(action==="available_rounds"){
@@ -30,7 +48,8 @@ Deno.serve(async(req:Request)=>{
       const r=result.data as{attempt_id:string;started_at:string;deadline_at:string;question_manifest:ManifestItem[]};const manifest=r.question_manifest??[];
       const qids=manifest.map(x=>x.question_id);const{data:questions,error:qe}=await adminClient.from("questions").select("id,stem,type").in("id",qids);if(qe)throw qe;
       const optionIds=manifest.flatMap(x=>x.option_order??[]);const{data:options,error:oe}=await adminClient.from("question_options").select("id,question_id,option_key,option_text").in("id",optionIds);if(oe)throw oe;
-      const hydrated=[...manifest].sort((a,b)=>a.position-b.position).map(m=>({id:m.question_id,stem:questions?.find(q=>q.id===m.question_id)?.stem??"",type:questions?.find(q=>q.id===m.question_id)?.type??"single_choice",options:(m.option_order??[]).map((oid,i)=>{const o=options?.find(x=>x.id===oid);return{id:oid,label:String.fromCharCode(65+i),text:o?.option_text??"",option_key:o?.option_key??""}})}));
+      const media=await signedImages(qids);
+      const hydrated=[...manifest].sort((a,b)=>a.position-b.position).map(m=>({id:m.question_id,stem:questions?.find(q=>q.id===m.question_id)?.stem??"",type:questions?.find(q=>q.id===m.question_id)?.type??"single_choice",media:media.get(m.question_id)??[],options:(m.option_order??[]).map((oid,i)=>{const o=options?.find(x=>x.id===oid);return{id:oid,label:String.fromCharCode(65+i),text:o?.option_text??"",option_key:o?.option_key??""}})}));
       return json({id:r.attempt_id,started_at:r.started_at,deadline_at:r.deadline_at,questions:hydrated});
     }
     if(action==="answer"){const result=await userClient.rpc("submit_quiz_response",{p_attempt:body.attempt_id,p_question:body.question_id,p_option:body.option_key,p_client_ms:body.client_ms??null});if(result.error)return json({error:result.error.message},400);return json(result.data??{accepted:true});}
@@ -57,6 +76,7 @@ Deno.serve(async(req:Request)=>{
         const qids=(rq??[]).map(x=>x.question_id);
         const{data:qs}=qids.length?await adminClient.from("questions").select("id,stem,explanation").in("id",qids):{data:[]};
         const{data:opts}=qids.length?await adminClient.from("question_options").select("question_id,option_key,option_text,is_correct").in("question_id",qids).order("option_key"):{data:[]};
+        const media=await signedImages(qids);
         const responseMap=new Map<string,{selected_option_key:string|null;is_correct:boolean|null;points_awarded:number|null}>();
         if(mine){
           const{data:responses}=await adminClient.from("responses").select("question_id,selected_option_key,is_correct,points_awarded").eq("attempt_id",mine.id);
@@ -68,7 +88,7 @@ Deno.serve(async(req:Request)=>{
           const correct=qOpts.find(o=>o.is_correct);
           const resp=responseMap.get(row.question_id);
           const selected=resp?.selected_option_key?(qOpts.find(o=>o.option_key===resp.selected_option_key)?.option_text??resp.selected_option_key):null;
-          return{question_id:row.question_id,stem:q?.stem??"",selected_option:selected,selected_option_key:resp?.selected_option_key??null,correct_option:correct?.option_text??"",correct_option_key:correct?.option_key??"",is_correct:resp?.is_correct??null,points_awarded:resp?.points_awarded??null,explanation:q?.explanation??null,options:qOpts.map(o=>({key:o.option_key,text:o.option_text,correct:!!o.is_correct}))};
+          return{question_id:row.question_id,stem:q?.stem??"",media:media.get(row.question_id)??[],selected_option:selected,selected_option_key:resp?.selected_option_key??null,correct_option:correct?.option_text??"",correct_option_key:correct?.option_key??"",is_correct:resp?.is_correct??null,points_awarded:resp?.points_awarded??null,explanation:q?.explanation??null,options:qOpts.map(o=>({key:o.option_key,text:o.option_text,correct:!!o.is_correct}))};
         });
         out.push({id:mine?.id??`review-${round.id}`,round_id:round.id,status:mine?.status??"skipped",score:mine?.score??null,submitted_at:mine?.submitted_at??null,result_released_at:round.results_released_at,released:true,attempted:!!mine,round:{round_number:round.round_number,title:round.title},responses:review});
       }

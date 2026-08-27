@@ -8,7 +8,7 @@ let appLoaded=false;
 let authInFlight:Promise<void>|null=null;
 
 function shell(title:string,body:string){
- root.innerHTML=`<div style="min-height:100vh;display:grid;place-items:center;background:#f5f7fa;font-family:Inter,system-ui,sans-serif;color:#172033;padding:20px"><div style="width:min(420px,100%);background:#fff;border:1px solid #e4e8ef;border-radius:18px;padding:26px;box-shadow:0 12px 32px rgba(15,23,42,.08)"><div style="font-size:11px;font-weight:800;letter-spacing:.12em;color:#6b7280">GeriCare • SECURE ACCESS</div><h1 style="font-size:26px;margin:8px 0 18px">${title}</h1>${body}</div></div>`;
+ root.innerHTML=`<div style="min-height:100vh;display:grid;place-items:center;background:#f5f7fa;font-family:Inter,system-ui,sans-serif;color:#172033;padding:20px"><div style="width:min(420px,100%);background:#fff;border:1px solid #e4e8ef;border-radius:18px;padding:26px;box-shadow:0 12px 32px rgba(15,23,42,.08)"><div style="font-size:11px;font-weight:800;letter-spacing:.12em;color:#6b7280">GERiCARE • SECURE ACCESS</div><h1 style="font-size:26px;margin:8px 0 18px">${title}</h1>${body}</div></div>`;
 }
 function renderLogin(message='Sign in with your authorized administrator email.'){
  appLoaded=false;
@@ -31,6 +31,23 @@ function addSignOut(){
  b.onclick=async()=>{await supabase.auth.signOut();location.reload()};
  document.body.appendChild(b);
 }
+function addViewNav(role:string){
+ if(document.getElementById('gericare-admin-nav'))return;
+ const view=new URLSearchParams(location.search).get('view');
+ const media=view==='media';
+ const timing=view==='timing';
+ const wrap=document.createElement('div');
+ wrap.id='gericare-admin-nav';
+ wrap.style.cssText='position:fixed;left:14px;bottom:14px;z-index:9999;display:flex;gap:8px;flex-wrap:wrap;max-width:calc(100vw - 110px)';
+ const link=(text:string,href:string)=>{const a=document.createElement('a');a.textContent=text;a.href=href;a.style.cssText='border:1px solid #d8dee8;background:white;color:#6b1244;text-decoration:none;border-radius:10px;padding:9px 12px;font-weight:800;box-shadow:0 4px 18px rgba(15,23,42,.12);white-space:nowrap';wrap.appendChild(a)};
+ if(media||timing)link('← Question bank',location.pathname);
+ else link('🖼 Question images',`${location.pathname}?view=media`);
+ if(role==='super_admin'){
+   link('👥 Participants','participants.html');
+   if(!timing)link('⏱ Quiz timers',`${location.pathname}?view=timing`);
+ }
+ document.body.appendChild(wrap);
+}
 
 if(!url||!key){shell('Admin Console','<p>Supabase environment is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then redeploy.</p>');throw new Error('Supabase environment not configured')}
 const supabase=createClient(url,key);
@@ -52,10 +69,17 @@ async function authorize(){
     return;
    }
    if(appLoaded)return;
+   const view=new URLSearchParams(location.search).get('view');
+   if(view==='timing'&&access.role!=='super_admin'){
+     shell('Access denied','<p>Quiz timers can be changed only by a super admin.</p>');
+     return;
+   }
    appLoaded=true;
    root.innerHTML='';
    try{
-    await import('./main.tsx');
+    if(view==='media')await import('./media-admin.tsx');
+    else if(view==='timing')await import('./timing-admin.tsx');
+    else await import('./main.tsx');
    }catch(e){
     appLoaded=false;
     const msg=e instanceof Error?e.message:String(e);
@@ -63,6 +87,7 @@ async function authorize(){
     document.getElementById('retry')!.onclick=()=>{appLoaded=false;void authorize()};
     return;
    }
+   addViewNav(access.role);
    addSignOut();
   }catch(e){
    appLoaded=false;

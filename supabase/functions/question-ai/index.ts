@@ -24,7 +24,15 @@ type Draft = {
 };
 
 const MODEL = Deno.env.get("QUESTION_AI_MODEL") || "gpt-5.6-sol";
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const corsHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-headers": "authorization, x-client-info, apikey, content-type",
+  "access-control-allow-methods": "POST, OPTIONS",
+};
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
+  status,
+  headers: { ...corsHeaders, "content-type": "application/json" },
+});
 
 function deterministicQa(draft: Partial<Draft>) {
   const flags: Array<{ code: string; severity: "warning" | "error"; message: string }> = [];
@@ -70,6 +78,7 @@ function parseDraft(text: string): Draft {
 }
 
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
   const auth = req.headers.get("authorization");
   if (!auth?.startsWith("Bearer ")) return json({ error: "unauthorized" }, 401);
